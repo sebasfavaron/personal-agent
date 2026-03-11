@@ -4,6 +4,8 @@ Successor to `second-brain`.
 
 Personal research + memory runtime, kept separate from `ai-dev-workflow`.
 
+See [INSTALL.md](INSTALL.md) for setup.
+
 ## Principles
 
 - Repo-local ownership for personal capabilities
@@ -12,22 +14,26 @@ Personal research + memory runtime, kept separate from `ai-dev-workflow`.
 - Human approval required for outreach / external side effects
 - `ai-dev-workflow` stays focused on project workflows
 
-## Current Scope
+## What Exists Today
 
-V1 foundation:
+This repository currently implements a local foundation, not a full personal assistant.
 
-- research run tracking
-- sources / claims / tasks persistence
-- approval queue
-- memory search
-- skill wrappers for Codex
+- SQLite-backed persistence for research runs
+- source, claim, task, and approval tracking
+- memory search over stored runs, claims, and tasks
+- Codex skill wrappers owned by this repo
+- internal command surface via `python3 scripts/personal.py`
+- unit tests for the storage lifecycle
 
-Not included yet:
+## What Is Still A Promise
 
-- sending email
-- contacting people
-- browser automation runtime
-- background daemon execution
+These are goals for future work. They are not implemented in this repo yet.
+
+- browser automation and live web execution
+- email sending or contact workflows
+- proactive background daemon / scheduler
+- calendar or inbox integrations
+- fully autonomous task execution
 
 ## Layout
 
@@ -42,7 +48,7 @@ personal-agent/
 
 ## Internal Commands
 
-Internal command surface only. Not intended as user-facing primary UX.
+Internal command surface only. Not intended as the primary UX for end users.
 
 ```bash
 python3 scripts/personal.py research start --goal "Investigate X"
@@ -51,6 +57,13 @@ python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"
 python3 scripts/personal.py approvals list
 ```
+
+## Intended Usage Model
+
+- personal capabilities stay in this repo
+- Codex skills from this repo can be exposed globally with symlinks
+- `ai-dev-workflow` remains separate and keeps owning its own workflow skills
+- risky external actions should go through the approval queue first
 
 ## Tests
 
