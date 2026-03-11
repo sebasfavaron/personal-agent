@@ -66,6 +66,11 @@ python3 scripts/personal.py approvals list
 - `ai-dev-workflow` remains separate and keeps owning its own workflow skills
 - risky external actions should go through the approval queue first
 
+## Clone-Friendly Extras
+
+- `scripts/install-skills.sh` links this repo's skills into `~/.codex/skills`
+- GitHub Actions runs the unit test suite on push and pull request
+
 ## Tests
 
 ```bash

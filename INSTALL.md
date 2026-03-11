@@ -102,11 +102,7 @@ This repo owns its own skills under:
 If you want Codex to discover them globally on your machine:
 
 ```bash
-mkdir -p ~/.codex/skills
-ln -sfn "$PWD/.agents/skills/personal-research" ~/.codex/skills/personal-research
-ln -sfn "$PWD/.agents/skills/personal-status" ~/.codex/skills/personal-status
-ln -sfn "$PWD/.agents/skills/personal-memory-search" ~/.codex/skills/personal-memory-search
-ln -sfn "$PWD/.agents/skills/personal-approval-queue" ~/.codex/skills/personal-approval-queue
+./scripts/install-skills.sh
 ```
 
 ## Current Limitations
