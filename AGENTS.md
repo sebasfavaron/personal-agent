@@ -10,6 +10,7 @@ Owner-managed repo. Work style: telegraph; min tokens.
 - keep state local-first
 - approval gate for outreach / side effects
 - prefer auditable storage and explicit assumptions
+- task hygiene: create `open` tasks only for real follow-up; if work is completed in-turn, avoid creating a task or close it before handoff; completed research runs should be marked finished
 
 ## Before Handoff
 - run repo checks
