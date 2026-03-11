@@ -53,6 +53,11 @@ python3 scripts/personal.py --json research start \
 Then add sources and claims:
 
 ```bash
+python3 scripts/personal.py --json research search-web \
+  --run-id "<run-id>" \
+  --query "local-first personal assistant patterns" \
+  --max-results 5
+
 python3 scripts/personal.py --json research capture-url \
   --run-id "<run-id>" \
   --url "https://example.com" \

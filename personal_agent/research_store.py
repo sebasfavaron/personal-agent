@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from .db import connect
 from .source_capture import fetch_url_capture
+from .web_search import search_web
 
 
 def _now() -> str:
@@ -124,6 +125,53 @@ def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> d
         "content_type": capture["content_type"],
         "text_preview": text[:280],
         "captured_chars": len(text),
+    }
+
+
+def search_and_store_web_results(run_id: str, query: str, max_results: int = 5) -> dict[str, Any]:
+    now = _now()
+    payload = search_web(query, max_results=max_results)
+    results = payload["results"]
+
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO artifacts (run_id, kind, content, created_at)
+            VALUES (?, 'search_results', ?, ?)
+            """,
+            (
+                run_id,
+                json.dumps(
+                    {
+                        "query": query,
+                        "engine": payload["engine"],
+                        "results": results,
+                        "request_url": payload["request_url"],
+                    },
+                    sort_keys=True,
+                ),
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO research_steps (run_id, kind, content, status, created_at)
+            VALUES (?, 'search', ?, 'completed', ?)
+            """,
+            (run_id, f"Searched web for: {query}", now),
+        )
+        conn.execute(
+            "UPDATE research_runs SET updated_at = ? WHERE id = ?",
+            (now, run_id),
+        )
+        _log(conn, "search", run_id, f"Searched web for {query}")
+
+    return {
+        "run_id": run_id,
+        "query": query,
+        "engine": payload["engine"],
+        "request_url": payload["request_url"],
+        "results": results,
     }
 
 

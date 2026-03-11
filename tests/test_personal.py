@@ -82,6 +82,43 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(len(loaded["artifacts"]), 1)
         self.assertEqual(loaded["artifacts"][0]["kind"], "source_capture")
 
+    def test_search_web_result_parsing_and_persistence(self) -> None:
+        from personal_agent import research_store
+        from personal_agent.research_store import get_run, search_and_store_web_results, start_research
+
+        original_search = research_store.search_web
+        research_store.search_web = lambda query, max_results=5: {
+            "query": query,
+            "engine": "duckduckgo_html",
+            "request_url": "https://html.duckduckgo.com/html/?q=test",
+            "results": [
+                {
+                    "title": "First Result",
+                    "url": "https://example.com/first",
+                    "domain": "example.com",
+                },
+                {
+                    "title": "Second Result",
+                    "url": "https://example.com/second",
+                    "domain": "example.com",
+                },
+            ][:max_results],
+        }
+
+        try:
+            run = start_research("Search the web")
+            run_id = run["run"]["id"]
+            saved = search_and_store_web_results(run_id, "test query", max_results=1)
+        finally:
+            research_store.search_web = original_search
+
+        self.assertEqual(len(saved["results"]), 1)
+
+        loaded = get_run(run_id)
+        search_artifacts = [artifact for artifact in loaded["artifacts"] if artifact["kind"] == "search_results"]
+        self.assertEqual(len(search_artifacts), 1)
+        self.assertIn("First Result", search_artifacts[0]["content"])
+
     def test_approvals_queue(self) -> None:
         from personal_agent.research_store import list_approvals, request_approval
 

@@ -23,6 +23,7 @@ from personal_agent.research_store import (
     list_approvals,
     request_approval,
     search_memory,
+    search_and_store_web_results,
     start_research,
 )
 
@@ -62,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     research_capture.add_argument("--url", required=True)
     research_capture.add_argument("--title", default="")
     research_capture.add_argument("--notes", default="")
+
+    research_search = research_sub.add_parser("search-web")
+    research_search.add_argument("--run-id", required=True)
+    research_search.add_argument("--query", required=True)
+    research_search.add_argument("--max-results", type=int, default=5)
 
     research_claim = research_sub.add_parser("add-claim")
     research_claim.add_argument("--run-id", required=True)
@@ -117,6 +123,9 @@ def main() -> int:
             return 0
         if args.research_command == "capture-url":
             _print(capture_source(args.run_id, args.url, args.title, args.notes), args.as_json)
+            return 0
+        if args.research_command == "search-web":
+            _print(search_and_store_web_results(args.run_id, args.query, args.max_results), args.as_json)
             return 0
         if args.research_command == "add-claim":
             _print(

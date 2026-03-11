@@ -57,6 +57,8 @@ def build_report(run_id: str, fmt: str = "md") -> str:
         lines.append("- none")
 
     capture_count = sum(1 for artifact in payload.get("artifacts", []) if artifact["kind"] == "source_capture")
+    search_count = sum(1 for artifact in payload.get("artifacts", []) if artifact["kind"] == "search_results")
     lines.extend(["", "## Captures", f"- {capture_count} stored capture(s)"])
+    lines.extend(["", "## Searches", f"- {search_count} stored search result set(s)"])
 
     return "\n".join(lines) + "\n"
