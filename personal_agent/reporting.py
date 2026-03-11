@@ -29,10 +29,12 @@ def build_report(run_id: str, fmt: str = "md") -> str:
     if payload["sources"]:
         for source in payload["sources"]:
             title = source["title"] or source["url"]
-            lines.append(f"- {title} ({source['domain']})")
+            domain = source["domain"] or "local-or-unknown"
+            lines.append(f"- {title} ({domain})")
             lines.append(f"  - URL: {source['url']}")
             if source["notes"]:
-                lines.append(f"  - Notes: {source['notes']}")
+                notes = " | ".join(part.strip() for part in source["notes"].splitlines() if part.strip())
+                lines.append(f"  - Notes: {notes}")
     else:
         lines.append("- none")
 
@@ -53,5 +55,8 @@ def build_report(run_id: str, fmt: str = "md") -> str:
             lines.append(f"- [{task['status']}] {task['task']}")
     else:
         lines.append("- none")
+
+    capture_count = sum(1 for artifact in payload.get("artifacts", []) if artifact["kind"] == "source_capture")
+    lines.extend(["", "## Captures", f"- {capture_count} stored capture(s)"])
 
     return "\n".join(lines) + "\n"

@@ -52,6 +52,7 @@ Internal command surface only. Not intended as the primary UX for end users.
 
 ```bash
 python3 scripts/personal.py research start --goal "Investigate X"
+python3 scripts/personal.py research capture-url --run-id <id> --url https://example.com
 python3 scripts/personal.py research add-source --run-id <id> --url https://example.com
 python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"

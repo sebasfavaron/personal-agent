@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .db import connect
+from .source_capture import fetch_url_capture
 
 
 def _now() -> str:
@@ -63,6 +64,67 @@ def add_source(run_id: str, url: str, title: str = "", notes: str = "") -> dict[
         )
         _log(conn, "source", run_id, f"Added source {url}")
     return {"run_id": run_id, "url": url, "domain": domain, "title": title, "notes": notes}
+
+
+def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> dict[str, Any]:
+    now = _now()
+    capture = fetch_url_capture(url)
+    effective_title = title or capture["title"] or url
+    text = capture["text"]
+    summary_notes = notes
+    if capture["content_type"]:
+        summary_notes = f"{notes}\ncontent_type={capture['content_type']}".strip()
+
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sources (run_id, url, title, domain, notes, retrieved_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, url, effective_title, _domain_for(url), summary_notes, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO artifacts (run_id, kind, content, created_at)
+            VALUES (?, 'source_capture', ?, ?)
+            """,
+            (
+                run_id,
+                json.dumps(
+                    {
+                        "url": url,
+                        "title": effective_title,
+                        "content_type": capture["content_type"],
+                        "text": text[:20000],
+                    },
+                    sort_keys=True,
+                ),
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO research_steps (run_id, kind, content, status, created_at)
+            VALUES (?, 'capture', ?, 'completed', ?)
+            """,
+            (run_id, f"Captured {url}", now),
+        )
+        conn.execute(
+            "UPDATE research_runs SET updated_at = ? WHERE id = ?",
+            (now, run_id),
+        )
+        _log(conn, "source_capture", run_id, f"Captured source {url}")
+
+    return {
+        "run_id": run_id,
+        "url": url,
+        "title": effective_title,
+        "domain": _domain_for(url),
+        "notes": summary_notes,
+        "content_type": capture["content_type"],
+        "text_preview": text[:280],
+        "captured_chars": len(text),
+    }
 
 
 def add_claim(
@@ -178,12 +240,14 @@ def get_run(run_id: str) -> dict[str, Any]:
         sources = [dict(row) for row in conn.execute("SELECT * FROM sources WHERE run_id = ? ORDER BY id", (run_id,))]
         claims = [dict(row) for row in conn.execute("SELECT * FROM claims WHERE run_id = ? ORDER BY id", (run_id,))]
         tasks = [dict(row) for row in conn.execute("SELECT * FROM tasks WHERE run_id = ? ORDER BY id", (run_id,))]
+        artifacts = [dict(row) for row in conn.execute("SELECT * FROM artifacts WHERE run_id = ? ORDER BY id", (run_id,))]
     return {
         "run": dict(run),
         "steps": steps,
         "sources": sources,
         "claims": claims,
         "tasks": tasks,
+        "artifacts": artifacts,
     }
 
 

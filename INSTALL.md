@@ -53,6 +53,11 @@ python3 scripts/personal.py --json research start \
 Then add sources and claims:
 
 ```bash
+python3 scripts/personal.py --json research capture-url \
+  --run-id "<run-id>" \
+  --url "https://example.com" \
+  --notes "why this source matters"
+
 python3 scripts/personal.py --json research add-source \
   --run-id "<run-id>" \
   --url "https://example.com" \

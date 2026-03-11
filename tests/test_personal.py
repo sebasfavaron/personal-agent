@@ -53,6 +53,35 @@ class PersonalAgentTests(unittest.TestCase):
         search = search_memory("browser automation")
         self.assertEqual(len(search["tasks"]), 1)
 
+    def test_capture_source_from_local_html_file(self) -> None:
+        from personal_agent.research_store import capture_source, get_run, start_research
+
+        html_path = Path(self.tmp.name) / "sample.html"
+        html_path.write_text(
+            """
+            <html>
+              <head><title>Sample Capture</title></head>
+              <body>
+                <h1>Captured heading</h1>
+                <p>Important body text for research capture.</p>
+              </body>
+            </html>
+            """,
+            encoding="utf-8",
+        )
+
+        run = start_research("Capture a local page")
+        run_id = run["run"]["id"]
+        captured = capture_source(run_id, html_path.as_uri(), notes="local fixture")
+
+        self.assertEqual(captured["title"], "Sample Capture")
+        self.assertGreater(captured["captured_chars"], 10)
+
+        loaded = get_run(run_id)
+        self.assertEqual(len(loaded["sources"]), 1)
+        self.assertEqual(len(loaded["artifacts"]), 1)
+        self.assertEqual(loaded["artifacts"][0]["kind"], "source_capture")
+
     def test_approvals_queue(self) -> None:
         from personal_agent.research_store import list_approvals, request_approval
 
