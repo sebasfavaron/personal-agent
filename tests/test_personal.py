@@ -128,6 +128,31 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(created["status"], "pending")
         self.assertEqual(len(pending), 1)
 
+    def test_task_intake_creates_parent_and_subtasks(self) -> None:
+        from personal_agent.research_store import create_task_intake, list_tasks, next_tasks
+
+        created = create_task_intake(
+            goal="Evaluate signage suppliers",
+            scope="covered padel clubs first",
+            assumptions="browser fullscreen preferred",
+            clarification_notes=["User clarified: clubs covered first"],
+            research_notes=["Mini research: multiple 55-inch Android signage options exist"],
+            parent_task="Build initial signage shortlist",
+            subtasks=[
+                "Collect 5 covered-club candidate displays",
+                "Verify browser/fullscreen path",
+                "Compare brightness and price bands",
+            ],
+        )
+
+        all_tasks = list_tasks(run_id=created["run_id"])
+        open_tasks = next_tasks()
+
+        self.assertEqual(len(created["subtasks"]), 3)
+        self.assertTrue(any(task["kind"] == "clarification" for task in all_tasks))
+        self.assertTrue(any(task["kind"] == "research_note" for task in all_tasks))
+        self.assertTrue(any(task["kind"] == "subtask" for task in open_tasks))
+
 
 if __name__ == "__main__":
     unittest.main()

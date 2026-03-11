@@ -210,8 +210,8 @@ def add_task(run_id: str | None, task: str, status: str = "open", due_at: str | 
     with connect() as conn:
         cur = conn.execute(
             """
-            INSERT INTO tasks (run_id, task, status, due_at, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO tasks (run_id, task, kind, status, parent_task_id, notes, due_at, created_at)
+            VALUES (?, ?, 'task', ?, NULL, NULL, ?, ?)
             """,
             (run_id, task, status, due_at, now),
         )
@@ -223,6 +223,116 @@ def add_task(run_id: str | None, task: str, status: str = "open", due_at: str | 
         "task": task,
         "status": status,
         "due_at": due_at,
+    }
+
+
+def add_structured_task(
+    run_id: str | None,
+    task: str,
+    *,
+    kind: str = "task",
+    status: str = "open",
+    parent_task_id: int | None = None,
+    notes: str | None = None,
+    due_at: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO tasks (run_id, task, kind, status, parent_task_id, notes, due_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, task, kind, status, parent_task_id, notes, due_at, now),
+        )
+        ref_id = str(run_id) if run_id else None
+        _log(conn, "task", ref_id, f"Added {kind}: {task[:120]}")
+    return {
+        "id": cur.lastrowid,
+        "run_id": run_id,
+        "task": task,
+        "kind": kind,
+        "status": status,
+        "parent_task_id": parent_task_id,
+        "notes": notes,
+        "due_at": due_at,
+    }
+
+
+def close_task(task_id: int, status: str = "done") -> dict[str, Any]:
+    now = _now()
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        _log(conn, "task", str(task_id), f"Marked task as {status} at {now}")
+    if row is None:
+        raise ValueError(f"Unknown task: {task_id}")
+    return dict(row)
+
+
+def list_tasks(status: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
+    query = """
+        SELECT id, run_id, task, kind, status, parent_task_id, notes, due_at, created_at
+        FROM tasks
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if run_id:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY created_at DESC, id DESC"
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def next_tasks(limit: int = 10) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, run_id, task, kind, status, parent_task_id, notes, due_at, created_at
+            FROM tasks
+            WHERE status = 'open'
+            ORDER BY CASE WHEN kind = 'subtask' THEN 0 ELSE 1 END, created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_task_intake(
+    goal: str,
+    scope: str,
+    assumptions: str,
+    clarification_notes: list[str],
+    research_notes: list[str],
+    parent_task: str,
+    subtasks: list[str],
+) -> dict[str, Any]:
+    run = start_research(goal, scope, assumptions)
+    run_id = run["run"]["id"]
+
+    for note in clarification_notes:
+        add_structured_task(run_id, note, kind="clarification", status="noted")
+    for note in research_notes:
+        add_structured_task(run_id, note, kind="research_note", status="noted")
+
+    parent = add_structured_task(run_id, parent_task, kind="task", status="open")
+    created_subtasks = [
+        add_structured_task(run_id, subtask, kind="subtask", status="open", parent_task_id=parent["id"])
+        for subtask in subtasks
+    ]
+
+    return {
+        "run_id": run_id,
+        "parent_task": parent,
+        "subtasks": created_subtasks,
     }
 
 

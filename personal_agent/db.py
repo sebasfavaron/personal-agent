@@ -66,10 +66,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT,
     task TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'task',
     status TEXT NOT NULL,
+    parent_task_id INTEGER,
+    notes TEXT,
     due_at TEXT,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE SET NULL
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (parent_task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
@@ -105,6 +109,25 @@ def ensure_db() -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(SCHEMA)
+        task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "kind" not in task_columns:
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'task'")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc):
+                    raise
+        if "parent_task_id" not in task_columns:
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc):
+                    raise
+        if "notes" not in task_columns:
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN notes TEXT")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc):
+                    raise
     return DB_PATH
 
 

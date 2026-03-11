@@ -11,7 +11,8 @@ for skill in \
   personal-research \
   personal-status \
   personal-memory-search \
-  personal-approval-queue
+  personal-approval-queue \
+  personal-task-intake
 do
   ln -sfn "$REPO_ROOT/.agents/skills/$skill" "$TARGET_DIR/$skill"
   printf 'linked %s -> %s\n' "$TARGET_DIR/$skill" "$REPO_ROOT/.agents/skills/$skill"

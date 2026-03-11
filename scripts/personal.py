@@ -17,10 +17,15 @@ from personal_agent.research_store import (
     add_claim,
     capture_source,
     add_source,
+    add_structured_task,
     add_task,
+    close_task,
     close_research,
+    create_task_intake,
     get_run,
     list_approvals,
+    list_tasks,
+    next_tasks,
     request_approval,
     search_memory,
     search_and_store_web_results,
@@ -106,6 +111,38 @@ def build_parser() -> argparse.ArgumentParser:
     approvals_request.add_argument("--risk-level", default="high")
     approvals_request.add_argument("--payload", required=True, help="JSON payload")
 
+    tasks = subparsers.add_parser("tasks")
+    tasks_sub = tasks.add_subparsers(dest="tasks_command", required=True)
+
+    tasks_add = tasks_sub.add_parser("add")
+    tasks_add.add_argument("--task", required=True)
+    tasks_add.add_argument("--run-id", default=None)
+    tasks_add.add_argument("--kind", default="task")
+    tasks_add.add_argument("--status", default="open")
+    tasks_add.add_argument("--parent-task-id", type=int, default=None)
+    tasks_add.add_argument("--notes", default=None)
+    tasks_add.add_argument("--due-at", default=None)
+
+    tasks_list = tasks_sub.add_parser("list")
+    tasks_list.add_argument("--status", default=None)
+    tasks_list.add_argument("--run-id", default=None)
+
+    tasks_next = tasks_sub.add_parser("next")
+    tasks_next.add_argument("--limit", type=int, default=10)
+
+    tasks_close = tasks_sub.add_parser("close")
+    tasks_close.add_argument("--task-id", type=int, required=True)
+    tasks_close.add_argument("--status", default="done")
+
+    tasks_intake = tasks_sub.add_parser("intake")
+    tasks_intake.add_argument("--goal", required=True)
+    tasks_intake.add_argument("--scope", default="")
+    tasks_intake.add_argument("--assumptions", default="")
+    tasks_intake.add_argument("--clarifications", required=True, help="JSON array")
+    tasks_intake.add_argument("--research-notes", required=True, help="JSON array")
+    tasks_intake.add_argument("--parent-task", required=True)
+    tasks_intake.add_argument("--subtasks", required=True, help="JSON array")
+
     return parser
 
 
@@ -158,6 +195,45 @@ def main() -> int:
         if args.approvals_command == "request":
             payload = json.loads(args.payload)
             _print(request_approval(args.kind, payload, args.risk_level), args.as_json)
+            return 0
+
+    if args.command == "tasks":
+        if args.tasks_command == "add":
+            _print(
+                add_structured_task(
+                    args.run_id,
+                    args.task,
+                    kind=args.kind,
+                    status=args.status,
+                    parent_task_id=args.parent_task_id,
+                    notes=args.notes,
+                    due_at=args.due_at,
+                ),
+                args.as_json,
+            )
+            return 0
+        if args.tasks_command == "list":
+            _print(list_tasks(args.status, args.run_id), args.as_json)
+            return 0
+        if args.tasks_command == "next":
+            _print(next_tasks(args.limit), args.as_json)
+            return 0
+        if args.tasks_command == "close":
+            _print(close_task(args.task_id, args.status), args.as_json)
+            return 0
+        if args.tasks_command == "intake":
+            _print(
+                create_task_intake(
+                    args.goal,
+                    args.scope,
+                    args.assumptions,
+                    json.loads(args.clarifications),
+                    json.loads(args.research_notes),
+                    args.parent_task,
+                    json.loads(args.subtasks),
+                ),
+                args.as_json,
+            )
             return 0
 
     parser.error("Unhandled command")

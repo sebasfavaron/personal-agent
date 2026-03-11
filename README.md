@@ -22,6 +22,7 @@ This repository currently implements a local foundation, not a full personal ass
 - source, claim, task, and approval tracking
 - memory search over stored runs, claims, and tasks
 - Codex skill wrappers owned by this repo
+- task intake persistence with parent tasks and subtasks
 - internal command surface via `python3 scripts/personal.py`
 - unit tests for the storage lifecycle
 
@@ -58,6 +59,7 @@ python3 scripts/personal.py research add-source --run-id <id> --url https://exam
 python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"
 python3 scripts/personal.py approvals list
+python3 scripts/personal.py tasks next
 ```
 
 ## Intended Usage Model

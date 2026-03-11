@@ -8,6 +8,7 @@ What you get today:
 - research run tracking
 - Codex skill wrappers
 - approval queue foundation
+- task intake persistence with subtasks
 
 What you do not get yet:
 
