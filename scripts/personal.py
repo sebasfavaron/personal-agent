@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from personal_agent.db import ensure_db
+from personal_agent.migration import migrate_legacy_memory
 from personal_agent.reporting import build_report
 from personal_agent.research_store import (
     add_claim,
@@ -101,6 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
     memory = subparsers.add_parser("memory-search")
     memory.add_argument("--query", required=True)
 
+    memory_migrate = subparsers.add_parser("memory-migrate")
+
     approvals = subparsers.add_parser("approvals")
     approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
     approvals_list = approvals_sub.add_parser("list")
@@ -186,6 +189,10 @@ def main() -> int:
 
     if args.command == "memory-search":
         _print(search_memory(args.query), args.as_json)
+        return 0
+
+    if args.command == "memory-migrate":
+        _print(migrate_legacy_memory(), args.as_json)
         return 0
 
     if args.command == "approvals":

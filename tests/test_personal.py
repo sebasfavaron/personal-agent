@@ -10,6 +10,8 @@ class PersonalAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["PERSONAL_AGENT_DATA_DIR"] = self.tmp.name
+        os.environ["PERSONAL_AGENT_SHARED_MEMORY_ROOT"] = "/Users/sebas/agents-database"
+        os.environ["PERSONAL_AGENT_SHARED_MEMORY_DB_PATH"] = str(Path(self.tmp.name) / "shared-agent-memory.sqlite3")
 
         from personal_agent import config
         from personal_agent import db
@@ -24,6 +26,8 @@ class PersonalAgentTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
         os.environ.pop("PERSONAL_AGENT_DATA_DIR", None)
+        os.environ.pop("PERSONAL_AGENT_SHARED_MEMORY_ROOT", None)
+        os.environ.pop("PERSONAL_AGENT_SHARED_MEMORY_DB_PATH", None)
 
     def test_research_lifecycle_and_search(self) -> None:
         from personal_agent.research_store import (
@@ -52,6 +56,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         search = search_memory("browser automation")
         self.assertEqual(len(search["tasks"]), 1)
+        self.assertIn("shared_memory", search)
 
     def test_capture_source_from_local_html_file(self) -> None:
         from personal_agent.research_store import capture_source, get_run, start_research
@@ -152,6 +157,26 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(any(task["kind"] == "clarification" for task in all_tasks))
         self.assertTrue(any(task["kind"] == "research_note" for task in all_tasks))
         self.assertTrue(any(task["kind"] == "subtask" for task in open_tasks))
+
+    def test_legacy_memory_can_be_migrated_to_shared_store(self) -> None:
+        from personal_agent.migration import migrate_legacy_memory
+        from personal_agent.research_store import add_claim, add_source, add_task, close_research, start_research
+        from personal_agent.shared_memory import get_memory_service
+
+        run = start_research("Investigate shared memory")
+        run_id = run["run"]["id"]
+        add_source(run_id, "https://example.com/shared", "Shared", "reference")
+        add_claim(run_id, "Shared memory improves cross-agent recall.", 0.9, "verified", "https://example.com/shared")
+        add_task(run_id, "Import old research memory")
+        close_research(run_id, "Shared memory should become canonical.")
+
+        result = migrate_legacy_memory()
+        service = get_memory_service()
+        self.assertIsNotNone(service)
+
+        search = service.search("cross-agent recall", scopes=["global"])
+        self.assertTrue(search["results"])
+        self.assertEqual(result["migrated"]["runs"], 1)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .db import connect
+from .shared_memory import mirror_claim, mirror_run_summary, mirror_source, search_shared_memory
 from .source_capture import fetch_url_capture
 from .web_search import search_web
 
@@ -64,6 +65,7 @@ def add_source(run_id: str, url: str, title: str = "", notes: str = "") -> dict[
             (now, run_id),
         )
         _log(conn, "source", run_id, f"Added source {url}")
+    mirror_source(run_id, url, title, notes, domain)
     return {"run_id": run_id, "url": url, "domain": domain, "title": title, "notes": notes}
 
 
@@ -115,6 +117,7 @@ def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> d
             (now, run_id),
         )
         _log(conn, "source_capture", run_id, f"Captured source {url}")
+    mirror_source(run_id, url, effective_title, summary_notes, _domain_for(url))
 
     return {
         "run_id": run_id,
@@ -196,6 +199,7 @@ def add_claim(
             (now, run_id),
         )
         _log(conn, "claim", run_id, f"Added claim: {claim[:120]}")
+    mirror_claim(run_id, claim, confidence, status, source_url)
     return {
         "run_id": run_id,
         "claim": claim,
@@ -386,7 +390,9 @@ def close_research(run_id: str, summary: str) -> dict[str, Any]:
             (run_id, summary, now),
         )
         _log(conn, "research_run", run_id, "Closed research run")
-    return get_run(run_id)
+    run = get_run(run_id)
+    mirror_run_summary(run)
+    return run
 
 
 def get_run(run_id: str) -> dict[str, Any]:
@@ -462,4 +468,12 @@ def search_memory(query: str) -> dict[str, Any]:
                 (like,),
             )
         ]
-    return {"query": query, "runs": runs, "claims": claims, "tasks": tasks}
+    shared = search_shared_memory(query)
+    return {
+        "query": query,
+        "results": shared["results"],
+        "shared_memory": shared,
+        "runs": runs,
+        "claims": claims,
+        "tasks": tasks,
+    }

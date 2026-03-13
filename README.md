@@ -10,7 +10,8 @@ See [INSTALL.md](INSTALL.md) for setup.
 
 - Repo-local ownership for personal capabilities
 - Global skill discovery via symlinks from `~/.codex/skills`
-- SQLite as operational source of truth
+- SQLite as operational source of truth for research/task runtime
+- shared agent memory lives in sibling repo `~/Code/agents-database`
 - Human approval required for outreach / external side effects
 - `ai-dev-workflow` stays focused on project workflows
 
@@ -25,6 +26,28 @@ This repository currently implements a local foundation, not a full personal ass
 - task intake persistence with parent tasks and subtasks
 - internal command surface via `python3 scripts/personal.py`
 - unit tests for the storage lifecycle
+
+## Shared Memory Integration
+
+`personal-agent` now treats its own SQLite database as the operational store for research runs, tasks, approvals, and artifacts.
+
+Durable shared memory is moving to the sibling project at `~/Code/agents-database`.
+
+- new research claims and sources are mirrored into shared memory when available
+- completed research runs are mirrored as durable memory summaries
+- `memory-search` now queries shared memory first and also returns legacy local matches
+- `memory-migrate` imports existing legacy research memory into the shared system
+
+Default shared-memory path discovery:
+
+- tries `~/Code/agents-database/src` first
+- then falls back to `~/agents-database/src`
+- database defaults to `<shared-memory-root>/data/shared-agent-memory.sqlite3`
+
+These can be overridden with:
+
+- `PERSONAL_AGENT_SHARED_MEMORY_ROOT`
+- `PERSONAL_AGENT_SHARED_MEMORY_DB_PATH`
 
 ## What Is Still A Promise
 
@@ -58,6 +81,7 @@ python3 scripts/personal.py research capture-url --run-id <id> --url https://exa
 python3 scripts/personal.py research add-source --run-id <id> --url https://example.com
 python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"
+python3 scripts/personal.py memory-migrate
 python3 scripts/personal.py approvals list
 python3 scripts/personal.py tasks next
 ```
