@@ -8,7 +8,7 @@ Owner-managed repo. Work style: telegraph; min tokens.
 ## Rules
 - keep skills in this repo; expose globally by symlink, not copy
 - keep state local-first
-- persist notable user/project facts in shared memory system at `~/Code/agents-database`; local SQLite here stays operational for research/tasks/approvals
+- persist notable user/project facts in shared memory system at `~/agents-database`; local SQLite here stays operational for research/tasks/approvals
 - approval gate for outreach / side effects
 - prefer auditable storage and explicit assumptions
 - task hygiene: create `open` tasks only for real follow-up; if work is completed in-turn, avoid creating a task or close it before handoff; completed research runs should be marked finished

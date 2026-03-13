@@ -9,6 +9,7 @@ What you get today:
 - Codex skill wrappers
 - approval queue foundation
 - task intake persistence with subtasks
+- request routing across personal, company, and code specialists
 
 What you do not get yet:
 
@@ -109,6 +110,14 @@ If you want Codex to discover them globally on your machine:
 
 ```bash
 ./scripts/install-skills.sh
+```
+
+## Optional: Verify Routing
+
+```bash
+python3 scripts/personal.py --json route \
+  --input "Ballbox necesita fix en repo de pagos" \
+  --execute
 ```
 
 ## Current Limitations

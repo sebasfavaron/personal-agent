@@ -11,7 +11,7 @@ See [INSTALL.md](INSTALL.md) for setup.
 - Repo-local ownership for personal capabilities
 - Global skill discovery via symlinks from `~/.codex/skills`
 - SQLite as operational source of truth for research/task runtime
-- shared agent memory lives in sibling repo `~/Code/agents-database`
+- shared agent memory lives in sibling repo `~/agents-database`
 - Human approval required for outreach / external side effects
 - `ai-dev-workflow` stays focused on project workflows
 
@@ -24,6 +24,7 @@ This repository currently implements a local foundation, not a full personal ass
 - memory search over stored runs, claims, and tasks
 - Codex skill wrappers owned by this repo
 - task intake persistence with parent tasks and subtasks
+- request routing and specialist delegation across personal/company/code contexts
 - internal command surface via `python3 scripts/personal.py`
 - unit tests for the storage lifecycle
 
@@ -31,7 +32,7 @@ This repository currently implements a local foundation, not a full personal ass
 
 `personal-agent` now treats its own SQLite database as the operational store for research runs, tasks, approvals, and artifacts.
 
-Durable shared memory is moving to the sibling project at `~/Code/agents-database`.
+Durable shared memory lives in the sibling project at `~/agents-database`.
 
 - new research claims and sources are mirrored into shared memory when available
 - completed research runs are mirrored as durable memory summaries
@@ -40,8 +41,8 @@ Durable shared memory is moving to the sibling project at `~/Code/agents-databas
 
 Default shared-memory path discovery:
 
-- tries `~/Code/agents-database/src` first
-- then falls back to `~/agents-database/src`
+- tries `~/agents-database/src` first
+- then falls back to `~/Code/agents-database/src`
 - database defaults to `<shared-memory-root>/data/shared-agent-memory.sqlite3`
 
 These can be overridden with:
@@ -58,6 +59,16 @@ These are goals for future work. They are not implemented in this repo yet.
 - proactive background daemon / scheduler
 - calendar or inbox integrations
 - fully autonomous task execution
+
+## Routing Model
+
+`personal-agent` is the intended front door.
+
+- start here for general requests
+- personal context stays here
+- Ballbox or company-shaped requests can be delegated to `~/ballbox-company-agent`
+- code-shaped requests can be delegated to `~/ai-dev-workflow`
+- company requests that also imply repo work can cascade `personal -> company -> code`
 
 ## Layout
 
@@ -82,6 +93,7 @@ python3 scripts/personal.py research add-source --run-id <id> --url https://exam
 python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"
 python3 scripts/personal.py memory-migrate
+python3 scripts/personal.py route --input "Ballbox necesita fix en repo de pagos" --execute
 python3 scripts/personal.py approvals list
 python3 scripts/personal.py tasks next
 ```
@@ -89,8 +101,10 @@ python3 scripts/personal.py tasks next
 ## Intended Usage Model
 
 - personal capabilities stay in this repo
+- this repo should be the normal conversational entry point
 - Codex skills from this repo can be exposed globally with symlinks
 - `ai-dev-workflow` remains separate and keeps owning its own workflow skills
+- specialist repos can be delegated to when the request clearly matches them
 - risky external actions should go through the approval queue first
 
 ## Clone-Friendly Extras
