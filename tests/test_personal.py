@@ -207,6 +207,25 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(search["results"])
         self.assertEqual(result["migrated"]["runs"], 1)
 
+    def test_router_routes_company_and_code_requests(self) -> None:
+        from personal_agent.router import route_request
+
+        planned = route_request("Necesito avanzar Ballbox con un bug en el repo de pagos")
+        self.assertEqual(planned["primary_agent"], "company")
+        self.assertEqual(planned["secondary_agent"], "code")
+
+    def test_router_execute_creates_handoff_task(self) -> None:
+        from personal_agent.router import route_request
+        from personal_agent.research_store import list_tasks
+
+        fake_service = FakeMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
+        with patch("personal_agent.router.get_memory_service", return_value=fake_service):
+            executed = route_request("Armar PR para arreglar lint", execute=True)
+
+        self.assertEqual(executed["primary_agent"], "code")
+        self.assertEqual(executed["task"]["kind"], "code_handoff")
+        self.assertTrue(list_tasks(status="open"))
+
 
 if __name__ == "__main__":
     unittest.main()

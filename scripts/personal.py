@@ -32,6 +32,7 @@ from personal_agent.research_store import (
     search_and_store_web_results,
     start_research,
 )
+from personal_agent.router import route_request
 
 
 def _print(payload, as_json: bool) -> None:
@@ -103,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     memory.add_argument("--query", required=True)
 
     memory_migrate = subparsers.add_parser("memory-migrate")
+
+    route = subparsers.add_parser("route")
+    route.add_argument("--input", required=True)
+    route.add_argument("--execute", action="store_true")
 
     approvals = subparsers.add_parser("approvals")
     approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
@@ -193,6 +198,10 @@ def main() -> int:
 
     if args.command == "memory-migrate":
         _print(migrate_legacy_memory(), args.as_json)
+        return 0
+
+    if args.command == "route":
+        _print(route_request(args.input, execute=args.execute), args.as_json)
         return 0
 
     if args.command == "approvals":
