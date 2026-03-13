@@ -4,6 +4,34 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+
+class FakeMemoryService:
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
+        self.store = type("Store", (), {"db_path": db_path})()
+        self.records: list[dict] = []
+
+    def _text_embedding(self, text: str) -> list[float]:
+        return [float(len(text))]
+
+    def ingest(self, payload: dict) -> dict:
+        record = dict(payload)
+        self.records.append(record)
+        return record
+
+    def search(self, query: str, scopes: list[str] | None = None, limit: int = 10) -> dict:
+        scopes = scopes or []
+        normalized = query.lower()
+        results = []
+        for record in self.records:
+            if scopes and record.get("scope") not in scopes:
+                continue
+            haystack = " ".join(str(record.get(field, "")) for field in ["title", "summary", "content"]).lower()
+            if normalized in haystack:
+                results.append({"memory": record})
+        return {"retrieval_id": "fake", "results": results[:limit]}
 
 
 class PersonalAgentTests(unittest.TestCase):
@@ -161,7 +189,7 @@ class PersonalAgentTests(unittest.TestCase):
     def test_legacy_memory_can_be_migrated_to_shared_store(self) -> None:
         from personal_agent.migration import migrate_legacy_memory
         from personal_agent.research_store import add_claim, add_source, add_task, close_research, start_research
-        from personal_agent.shared_memory import get_memory_service
+        fake_service = FakeMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
 
         run = start_research("Investigate shared memory")
         run_id = run["run"]["id"]
@@ -170,11 +198,12 @@ class PersonalAgentTests(unittest.TestCase):
         add_task(run_id, "Import old research memory")
         close_research(run_id, "Shared memory should become canonical.")
 
-        result = migrate_legacy_memory()
-        service = get_memory_service()
-        self.assertIsNotNone(service)
+        with patch("personal_agent.shared_memory.get_memory_service", return_value=fake_service), patch(
+            "personal_agent.migration.get_memory_service", return_value=fake_service
+        ):
+            result = migrate_legacy_memory()
 
-        search = service.search("cross-agent recall", scopes=["global"])
+        search = fake_service.search("cross-agent recall", scopes=["global"])
         self.assertTrue(search["results"])
         self.assertEqual(result["migrated"]["runs"], 1)
 

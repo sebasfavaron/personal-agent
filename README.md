@@ -103,3 +103,13 @@ python3 scripts/personal.py tasks next
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+## Push Gate
+
+Install the local pre-push gate once per clone:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+After that, `git push` is blocked unless `scripts/run-checks.sh` passes.
