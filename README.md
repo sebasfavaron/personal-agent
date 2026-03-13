@@ -96,6 +96,8 @@ python3 scripts/personal.py memory-migrate
 python3 scripts/personal.py route --input "Ballbox necesita fix en repo de pagos" --execute
 python3 scripts/personal.py approvals list
 python3 scripts/personal.py tasks next
+python3 scripts/personal.py leisure add --title "Severance" --media-type series
+python3 scripts/personal.py leisure list --media-type series
 ```
 
 ## Intended Usage Model

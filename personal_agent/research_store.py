@@ -263,6 +263,58 @@ def add_structured_task(
     }
 
 
+def add_leisure_item(
+    title: str,
+    media_type: str,
+    *,
+    status: str = "to_consume",
+    notes: str | None = None,
+) -> dict[str, Any]:
+    now = _now()
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO leisure_items (title, media_type, status, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (title, media_type, status, notes, now, now),
+        )
+        _log(conn, "leisure_item", str(cur.lastrowid), f"Added leisure item: {title[:120]}")
+    return {
+        "id": cur.lastrowid,
+        "title": title,
+        "media_type": media_type,
+        "status": status,
+        "notes": notes,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def list_leisure_items(
+    media_type: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    query = """
+        SELECT id, title, media_type, status, notes, created_at, updated_at
+        FROM leisure_items
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if media_type:
+        clauses.append("media_type = ?")
+        params.append(media_type)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY updated_at DESC, id DESC"
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
 def close_task(task_id: int, status: str = "done") -> dict[str, Any]:
     now = _now()
     with connect() as conn:
@@ -468,6 +520,19 @@ def search_memory(query: str) -> dict[str, Any]:
                 (like,),
             )
         ]
+        leisure_items = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT id, title, media_type, status, notes, created_at, updated_at
+                FROM leisure_items
+                WHERE lower(title) LIKE ? OR lower(media_type) LIKE ? OR lower(coalesce(notes, '')) LIKE ?
+                ORDER BY updated_at DESC
+                LIMIT 20
+                """,
+                (like, like, like),
+            )
+        ]
     shared = search_shared_memory(query)
     return {
         "query": query,
@@ -476,4 +541,5 @@ def search_memory(query: str) -> dict[str, Any]:
         "runs": runs,
         "claims": claims,
         "tasks": tasks,
+        "leisure_items": leisure_items,
     }

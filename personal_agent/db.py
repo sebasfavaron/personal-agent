@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS artifacts (
     FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS leisure_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT NOT NULL,

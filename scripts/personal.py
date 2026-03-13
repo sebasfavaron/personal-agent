@@ -16,6 +16,7 @@ from personal_agent.migration import migrate_legacy_memory
 from personal_agent.reporting import build_report
 from personal_agent.research_store import (
     add_claim,
+    add_leisure_item,
     capture_source,
     add_source,
     add_structured_task,
@@ -24,6 +25,7 @@ from personal_agent.research_store import (
     close_research,
     create_task_intake,
     get_run,
+    list_leisure_items,
     list_approvals,
     list_tasks,
     next_tasks,
@@ -151,6 +153,19 @@ def build_parser() -> argparse.ArgumentParser:
     tasks_intake.add_argument("--parent-task", required=True)
     tasks_intake.add_argument("--subtasks", required=True, help="JSON array")
 
+    leisure = subparsers.add_parser("leisure")
+    leisure_sub = leisure.add_subparsers(dest="leisure_command", required=True)
+
+    leisure_add = leisure_sub.add_parser("add")
+    leisure_add.add_argument("--title", required=True)
+    leisure_add.add_argument("--media-type", required=True)
+    leisure_add.add_argument("--status", default="to_consume")
+    leisure_add.add_argument("--notes", default=None)
+
+    leisure_list = leisure_sub.add_parser("list")
+    leisure_list.add_argument("--media-type", default=None)
+    leisure_list.add_argument("--status", default=None)
+
     return parser
 
 
@@ -250,6 +265,22 @@ def main() -> int:
                 ),
                 args.as_json,
             )
+            return 0
+
+    if args.command == "leisure":
+        if args.leisure_command == "add":
+            _print(
+                add_leisure_item(
+                    args.title,
+                    args.media_type,
+                    status=args.status,
+                    notes=args.notes,
+                ),
+                args.as_json,
+            )
+            return 0
+        if args.leisure_command == "list":
+            _print(list_leisure_items(args.media_type, args.status), args.as_json)
             return 0
 
     parser.error("Unhandled command")

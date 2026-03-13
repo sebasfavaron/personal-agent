@@ -231,6 +231,19 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(executed["delegation"]["delegated"], "code")
         self.assertTrue(list_tasks(status="open"))
 
+    def test_leisure_items_can_be_stored_listed_and_searched(self) -> None:
+        from personal_agent.research_store import add_leisure_item, list_leisure_items, search_memory
+
+        created = add_leisure_item("Severance", "series", notes="watchlist")
+        listed = list_leisure_items(media_type="series")
+        search = search_memory("severance")
+
+        self.assertEqual(created["media_type"], "series")
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["title"], "Severance")
+        self.assertEqual(len(search["leisure_items"]), 1)
+        self.assertEqual(search["leisure_items"][0]["title"], "Severance")
+
 
 if __name__ == "__main__":
     unittest.main()
