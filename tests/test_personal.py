@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -219,11 +220,15 @@ class PersonalAgentTests(unittest.TestCase):
         from personal_agent.research_store import list_tasks
 
         fake_service = FakeMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
-        with patch("personal_agent.router.get_memory_service", return_value=fake_service):
+        fake_completed = type("CompletedProcess", (), {"stdout": json.dumps({"ok": True, "delegated": "code"})})()
+        with patch("personal_agent.router.get_memory_service", return_value=fake_service), patch(
+            "personal_agent.router.subprocess.run", return_value=fake_completed
+        ):
             executed = route_request("Armar PR para arreglar lint", execute=True)
 
         self.assertEqual(executed["primary_agent"], "code")
         self.assertEqual(executed["task"]["kind"], "code_handoff")
+        self.assertEqual(executed["delegation"]["delegated"], "code")
         self.assertTrue(list_tasks(status="open"))
 
 

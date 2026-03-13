@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import subprocess
 from typing import Any
+from pathlib import Path
 
 from .research_store import add_structured_task
 from .shared_memory import get_memory_service
 
+PERSONAL_ROOT = Path(__file__).resolve().parent.parent
+BALLBOX_COMPANY_ROOT = PERSONAL_ROOT.parent / "ballbox-company-agent"
+AI_DEV_WORKFLOW_ROOT = PERSONAL_ROOT.parent / "ai-dev-workflow"
 
 COMPANY_HINTS = {
     "ballbox",
@@ -112,6 +118,35 @@ def _mirror_route(text: str, route: dict[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _delegate(route: dict[str, Any], text: str) -> dict[str, Any] | None:
+    if route["primary_agent"] == "company":
+        command = [
+            "python3",
+            str(BALLBOX_COMPANY_ROOT / "scripts" / "ballbox_company_agent.py"),
+            "delegate",
+            "--input",
+            text,
+            "--title",
+            f"Personal handoff: {text[:80]}",
+        ]
+    elif route["primary_agent"] == "code":
+        command = [
+            "python3",
+            str(AI_DEV_WORKFLOW_ROOT / "scripts" / "ai_dev_workflow_memory.py"),
+            "intake-task",
+            "--input",
+            text,
+            "--origin",
+            "personal-agent",
+            "--title",
+            f"Personal code handoff: {text[:80]}",
+        ]
+    else:
+        return None
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
 def route_request(text: str, execute: bool = False) -> dict[str, Any]:
     route = classify_request(text)
     payload: dict[str, Any] = {
@@ -130,6 +165,8 @@ def route_request(text: str, execute: bool = False) -> dict[str, Any]:
         notes=route["reason"],
     )
     mirrored = _mirror_route(text, route)
+    delegated = _delegate(route, text)
     payload["task"] = task
     payload["shared_memory"] = {"enabled": mirrored is not None, "memory_id": mirrored["id"] if mirrored else None}
+    payload["delegation"] = delegated
     return payload
