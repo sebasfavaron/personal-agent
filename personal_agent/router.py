@@ -2,81 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import subprocess
-from typing import Any
 from pathlib import Path
+from typing import Any
 
+from .planner import build_route_payload, classify_request
 from .research_store import add_structured_task
 from .shared_memory import get_memory_service
 
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
 BALLBOX_COMPANY_ROOT = PERSONAL_ROOT.parent / "ballbox-company-agent"
 AI_DEV_WORKFLOW_ROOT = PERSONAL_ROOT.parent / "ai-dev-workflow"
-
-COMPANY_HINTS = {
-    "ballbox",
-    "volvox",
-    "empresa",
-    "company",
-    "operativo",
-    "operativa",
-    "ventas",
-    "sales",
-    "cliente",
-    "clientes",
-    "padel",
-}
-CODE_HINTS = {
-    "repo",
-    "repositorio",
-    "bug",
-    "fix",
-    "feature",
-    "pr",
-    "pull request",
-    "branch",
-    "code",
-    "codigo",
-    "tests",
-    "lint",
-    "build",
-    "refactor",
-    "implement",
-}
-
-
-def _tokenize(text: str) -> set[str]:
-    return {token for token in re.split(r"[^a-z0-9-]+", text.lower()) if token}
-
-
-def classify_request(text: str) -> dict[str, Any]:
-    tokens = _tokenize(text)
-    company_hits = sorted(tokens & COMPANY_HINTS)
-    code_hits = sorted(tokens & CODE_HINTS)
-    if company_hits and code_hits:
-        return {
-            "primary_agent": "company",
-            "secondary_agent": "code",
-            "reason": f"company context ({', '.join(company_hits)}) plus code work ({', '.join(code_hits)})",
-        }
-    if company_hits:
-        return {
-            "primary_agent": "company",
-            "secondary_agent": None,
-            "reason": f"company context ({', '.join(company_hits)})",
-        }
-    if code_hits:
-        return {
-            "primary_agent": "code",
-            "secondary_agent": None,
-            "reason": f"code work ({', '.join(code_hits)})",
-        }
-    return {
-        "primary_agent": "personal",
-        "secondary_agent": None,
-        "reason": "default personal route",
-    }
 
 
 def _mirror_route(text: str, route: dict[str, Any]) -> dict[str, Any] | None:
@@ -148,7 +84,7 @@ def _delegate(route: dict[str, Any], text: str) -> dict[str, Any] | None:
 
 
 def route_request(text: str, execute: bool = False) -> dict[str, Any]:
-    route = classify_request(text)
+    route = build_route_payload(text)
     payload: dict[str, Any] = {
         "input": text,
         **route,

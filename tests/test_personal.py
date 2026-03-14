@@ -34,6 +34,40 @@ class FakeMemoryService:
                 results.append({"memory": record})
         return {"retrieval_id": "fake", "results": results[:limit]}
 
+    def list_memories(
+        self,
+        *,
+        status: str | None = "active",
+        scope: str | None = None,
+        memory_type: str | None = None,
+        project_id: str | None = None,
+        repo_id: str | None = None,
+        source_ref: str | None = None,
+        evidence_ref: str | None = None,
+        metadata: dict | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        matches = []
+        for record in self.records:
+            if status is not None and record.get("status", "active") != status:
+                continue
+            if scope is not None and record.get("scope") != scope:
+                continue
+            if memory_type is not None and record.get("type") != memory_type:
+                continue
+            if project_id is not None and record.get("project_id") != project_id:
+                continue
+            if repo_id is not None and record.get("repo_id") != repo_id:
+                continue
+            if source_ref is not None and record.get("source_ref") != source_ref:
+                continue
+            if evidence_ref is not None and record.get("evidence_ref") != evidence_ref:
+                continue
+            if metadata and any(record.get("metadata", {}).get(key) != value for key, value in metadata.items()):
+                continue
+            matches.append(record)
+        return matches[:limit]
+
 
 class PersonalAgentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -208,6 +242,56 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(search["results"])
         self.assertEqual(result["migrated"]["runs"], 1)
 
+    def test_get_run_falls_back_to_shared_legacy_bridge(self) -> None:
+        from personal_agent.research_store import get_run
+
+        fake_service = FakeMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
+        fake_service.records.extend(
+            [
+                {
+                    "id": "legacy_run_run-123",
+                    "type": "episode",
+                    "scope": "global",
+                    "status": "active",
+                    "title": "Research run: Shared-only run",
+                    "content": "Goal: Shared-only run\nScope: transition\nAssumptions: mirrored\nSummary: Stored in shared DB only.",
+                    "summary": "Stored in shared DB only.",
+                    "confidence": 0.8,
+                    "freshness": 0.8,
+                    "source_ref": "personal-agent:run:run-123",
+                    "evidence_ref": "personal-agent:run:run-123",
+                    "created_at": "2026-03-14T00:00:00+00:00",
+                    "updated_at": "2026-03-14T00:00:00+00:00",
+                    "observed_at": "2026-03-14T00:00:00+00:00",
+                    "metadata": {"legacy_kind": "research_run", "legacy_run_id": "run-123", "run_status": "completed"},
+                },
+                {
+                    "id": "legacy_claim_run-123",
+                    "type": "artifact",
+                    "scope": "global",
+                    "status": "active",
+                    "title": "Research claim: Shared DB keeps the bridge alive",
+                    "content": "Shared DB keeps the bridge alive",
+                    "summary": "Shared DB keeps the bridge alive",
+                    "confidence": 0.9,
+                    "freshness": 0.7,
+                    "source_ref": "personal-agent:run:run-123",
+                    "evidence_ref": "https://example.com/bridge",
+                    "created_at": "2026-03-14T00:01:00+00:00",
+                    "updated_at": "2026-03-14T00:01:00+00:00",
+                    "observed_at": "2026-03-14T00:01:00+00:00",
+                    "metadata": {"legacy_kind": "claim", "legacy_run_id": "run-123", "claim_status": "verified", "source_url": "https://example.com/bridge"},
+                },
+            ]
+        )
+
+        with patch("personal_agent.shared_memory.get_memory_service", return_value=fake_service):
+            bridged = get_run("run-123")
+
+        self.assertEqual(bridged["run"]["goal"], "Shared-only run")
+        self.assertEqual(bridged["run"]["transition_source"], "shared-memory-legacy-bridge")
+        self.assertEqual(bridged["claims"][0]["claim"], "Shared DB keeps the bridge alive")
+
     def test_router_routes_company_and_code_requests(self) -> None:
         from personal_agent.router import route_request
 
@@ -231,6 +315,20 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(executed["delegation"]["delegated"], "code")
         self.assertTrue(list_tasks(status="open"))
 
+    def test_router_falls_back_when_codex_plan_is_invalid(self) -> None:
+        from personal_agent.router import route_request
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text("not-json", encoding="utf-8")
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.planner.subprocess.run", side_effect=fake_run):
+            planned = route_request("Armar PR para arreglar lint")
+
+        self.assertEqual(planned["primary_agent"], "code")
+        self.assertEqual(planned["planning_source"], "fallback")
+
     def test_leisure_items_can_be_stored_listed_and_searched(self) -> None:
         from personal_agent.research_store import add_leisure_item, list_leisure_items, search_memory
 
@@ -243,6 +341,214 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(listed[0]["title"], "Severance")
         self.assertEqual(len(search["leisure_items"]), 1)
         self.assertEqual(search["leisure_items"][0]["title"], "Severance")
+
+    def test_runtime_intake_creates_operational_task_and_handoff(self) -> None:
+        from personal_agent.runtime import PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        result = runtime.intake("Ballbox necesita fix en repo de pagos y abrir branch para QR")
+
+        self.assertEqual(result.task["owner_agent"], "personal-agent")
+        self.assertEqual(len(result.subtasks), 3)
+        self.assertIsNotNone(result.handoff)
+        self.assertEqual(result.handoff["to_agent"], "ballbox-company-agent")
+
+    def test_runtime_intake_uses_codex_plan_when_available(self) -> None:
+        from personal_agent.runtime import PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            if "-o" not in command:
+                return type(
+                    "CompletedProcess",
+                    (),
+                    {"stdout": json.dumps({"status": "accepted", "summary": "accepted"}), "stderr": ""},
+                )()
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "primary_agent": "code",
+                        "secondary_agent": None,
+                        "reason": "repo implementation work",
+                        "delegation_target": "ai-dev-workflow",
+                        "codex_instruction": "Let the code agent inspect and execute.",
+                        "subtasks": [
+                            {"title": "Inspect repo state", "detail": "Read the local repository context first."},
+                            {"title": "Delegate implementation", "detail": "Send the coding work to ai-dev-workflow."},
+                            {"title": "Review outcome", "detail": "Summarize results and next steps."},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.planner.subprocess.run", side_effect=fake_run):
+            result = runtime.intake("Necesito resolver un refactor chico en un repo local")
+
+        self.assertEqual(result.task["metadata"]["route"]["primary_agent"], "code")
+        self.assertEqual(result.task["metadata"]["route"]["planning_source"], "codex")
+        self.assertEqual(result.handoff["to_agent"], "ai-dev-workflow")
+        self.assertEqual(result.subtasks[0]["title"], "Inspect repo state")
+
+    def test_runtime_blocker_response_reopens_task(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Need clarification",
+            intent="Need missing context",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="blocked",
+            blocked_reason="Missing detail",
+            requires_human_input=True,
+        )
+
+        resolved = runtime.respond_to_blocker(task["id"], "Here is the missing detail")
+
+        self.assertEqual(resolved["task"]["status"], "open")
+        self.assertFalse(resolved["task"]["requires_human_input"])
+        self.assertEqual(resolved["artifact"]["artifact_type"], "blocker_response")
+
+    def test_runtime_process_once_runs_codex_for_personal_tasks(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Summarize next move",
+            intent="Need a concise recommendation",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "reason": "default personal route"}},
+        )
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            if "-o" not in command:
+                return type(
+                    "CompletedProcess",
+                    (),
+                    {"stdout": json.dumps({"status": "accepted", "summary": "accepted"}), "stderr": ""},
+                )()
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "complete",
+                        "summary": "Generated recommendation",
+                        "report_title": "Worker report",
+                        "report_markdown": "# Report\n\nAll good.\n",
+                        "blocker_reason": "",
+                        "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            payload = runtime.process_once()
+
+        self.assertTrue(payload["processed"])
+        updated = runtime.service.get_task(task["id"])
+        self.assertEqual(updated["status"], "completed")
+        artifacts = runtime.service.list_artifacts(task_id=task["id"])
+        self.assertTrue(any(artifact["artifact_type"] == "report" for artifact in artifacts))
+
+    def test_runtime_process_once_requests_approval_when_codex_requires_it(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Reach out to supplier",
+            intent="Need to contact an external supplier for a quote",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "reason": "default personal route"}},
+        )
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            if "-o" not in command:
+                return type(
+                    "CompletedProcess",
+                    (),
+                    {"stdout": json.dumps({"status": "accepted", "summary": "accepted"}), "stderr": ""},
+                )()
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "needs_approval",
+                        "summary": "External outreach required",
+                        "report_title": "Approval needed",
+                        "report_markdown": "# Approval\n\nNeed approval before contacting the supplier.\n",
+                        "blocker_reason": "",
+                        "approval": {
+                            "kind": "outreach",
+                            "risk_level": "high",
+                            "payload": {"summary": "Contact supplier for quote", "channel": "email"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            payload = runtime.process_once()
+
+        self.assertTrue(payload["processed"])
+        updated = runtime.service.get_task(task["id"])
+        self.assertEqual(updated["status"], "blocked")
+        self.assertTrue(updated["requires_human_input"])
+        self.assertEqual(updated["blocked_reason"], "Awaiting approval")
+        approvals = runtime.service.list_approvals(status="pending")
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(approvals[0]["kind"], "outreach")
+
+    def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Probe codex command",
+            intent="Need to verify codex add-dir wiring",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "reason": "default personal route"}},
+        )
+        seen: list[list[str]] = []
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            seen.append(command)
+            if "-o" not in command:
+                return type(
+                    "CompletedProcess",
+                    (),
+                    {"stdout": json.dumps({"status": "accepted", "summary": "accepted"}), "stderr": ""},
+                )()
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "complete",
+                        "summary": "Generated recommendation",
+                        "report_title": "Worker report",
+                        "report_markdown": "# Report\n\nAll good.\n",
+                        "blocker_reason": "",
+                        "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            runtime.process_once()
+
+        codex_commands = [command for command in seen if command[:2] == ["codex", "exec"]]
+        self.assertTrue(codex_commands)
+        self.assertIn("--add-dir", codex_commands[0])
+        add_dir_value = codex_commands[0][codex_commands[0].index("--add-dir") + 1]
+        self.assertEqual(add_dir_value, "/Users/sebas/agents-database")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ Owner-managed repo. Work style: telegraph; min tokens.
 - Sebas: `street-cast-server` main connected
 - Sebas preference: durable operational rules/prefs belong in `~/agents-database`, not Codex internal approval/state storage
 - Sebas preference: if any spoken, remembered, or ambiguous term needs interpretation, resolve through `~/agents-database` first
+- Codex launch convention for personal-agent work that must write shared DB: add `--add-dir ~/agents-database` so sandboxed runs can edit the canonical DB in-repo
 
 ## Before Handoff
 - run repo checks
