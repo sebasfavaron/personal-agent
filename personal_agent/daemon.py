@@ -80,7 +80,7 @@ HTML_PAGE = """<!doctype html>
         renderList('active', payload.active_tasks, task => `<li><strong>${task.title}</strong><div class="task-id">${task.id}</div><div class="meta">${task.status}</div></li>`);
         renderBlocked(payload.blocked_tasks);
         renderList('handoffs', payload.pending_handoffs, handoff => `<li><strong>${handoff.to_agent}</strong><div class="task-id">${handoff.task_id}</div><div class="meta">${handoff.reason}</div></li>`);
-        renderList('approvals', payload.pending_approvals, approval => `<li><strong>${approval.kind}</strong><div class="task-id">${approval.task_id}</div><div class="meta">${approval.risk_level}</div></li>`);
+        renderApprovals(payload.pending_approvals);
         renderList('artifacts', payload.recent_artifacts.slice(0, 8), artifact => `<li><strong>${artifact.title}</strong><div class="task-id">${artifact.task_id}</div><div class="meta">${artifact.artifact_type}</div></li>`);
       }
       function renderList(id, items, template) {
@@ -117,6 +117,42 @@ HTML_PAGE = """<!doctype html>
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ response })
+            });
+            await loadStatus();
+          });
+        });
+      }
+      function renderApprovals(items) {
+        const target = document.getElementById('approvals');
+        if (!items.length) {
+          target.innerHTML = '<p class="muted">None.</p>';
+          return;
+        }
+        target.innerHTML = items.map(approval => `
+          <div style="margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line);">
+            <strong>${approval.kind}</strong>
+            <div class="task-id">${approval.id}</div>
+            <div class="meta">${approval.task_id} / ${approval.risk_level}</div>
+            <form data-approval-id="${approval.id}" data-status="approved" class="approval-form">
+              <textarea rows="2" placeholder="Optional approval note"></textarea>
+              <button type="submit">Approve + resume</button>
+            </form>
+            <form data-approval-id="${approval.id}" data-status="rejected" class="approval-form" style="margin-top: 8px;">
+              <textarea rows="2" placeholder="Reason for rejection"></textarea>
+              <button type="submit" style="background: var(--warn);">Reject</button>
+            </form>
+          </div>
+        `).join('');
+        document.querySelectorAll('.approval-form').forEach(form => {
+          form.addEventListener('submit', async event => {
+            event.preventDefault();
+            const approvalId = form.getAttribute('data-approval-id');
+            const status = form.getAttribute('data-status');
+            const note = form.querySelector('textarea').value;
+            await fetch(`/api/approvals/${approvalId}/resolve`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status, note })
             });
             await loadStatus();
           });
@@ -181,6 +217,10 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/tasks/") and parsed.path.endswith("/blocker-response"):
             task_id = parsed.path.split("/")[3]
             self._send_json(self.server.runtime.respond_to_blocker(task_id, payload["response"]))
+            return
+        if parsed.path.startswith("/api/approvals/") and parsed.path.endswith("/resolve"):
+            approval_id = parsed.path.split("/")[3]
+            self._send_json(self.server.runtime.resolve_approval(approval_id, payload["status"], payload.get("note", "")))
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 

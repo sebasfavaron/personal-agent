@@ -142,6 +142,43 @@ class PersonalAgentRuntime:
         )
         return {"task": task, "artifact": artifact}
 
+    def resolve_approval(self, approval_id: str, status: str, resolution_note: str = "") -> dict[str, Any]:
+        normalized = status.strip().lower()
+        if normalized not in {"approved", "rejected"}:
+            raise ValueError(f"Unsupported approval status: {status}")
+        approval = self.service.resolve_approval(approval_id, status=normalized, resolution_note=resolution_note or None)
+        artifact = self.service.create_artifact(
+            task_id=approval["task_id"],
+            artifact_type="approval_resolution",
+            title=f"Approval {normalized}",
+            content=resolution_note.strip() or f"Approval {normalized}.",
+            source_ref=PERSONAL_AGENT_ID,
+            metadata={"approval_id": approval_id, "status": normalized},
+        )
+        task_metadata = {
+            "approval_id": approval_id,
+            "approval_resolution_artifact_id": artifact["id"],
+            "approval_status": normalized,
+        }
+        if normalized == "rejected":
+            task = self.service.update_task(
+                approval["task_id"],
+                status="blocked",
+                blocked_reason=resolution_note.strip() or "Approval rejected",
+                requires_human_input=False,
+                metadata=task_metadata,
+            )
+            return {"approval": approval, "artifact": artifact, "task": task, "resume": None}
+        task = self.service.update_task(
+            approval["task_id"],
+            status="open",
+            blocked_reason=None,
+            requires_human_input=False,
+            metadata=task_metadata,
+        )
+        resume = self._run_task_with_codex(task)
+        return {"approval": approval, "artifact": artifact, "task": self.service.get_task(task["id"]), "resume": resume}
+
     def process_once(self) -> dict[str, Any]:
         processed: list[dict[str, Any]] = []
         for handoff in self.service.list_handoffs(status="pending", limit=20):
@@ -309,12 +346,29 @@ class PersonalAgentRuntime:
                 '    "kind": "required when outcome is needs_approval",',
                 '    "risk_level": "low|medium|high",',
                 '    "payload": {"summary": "what needs approval"}',
-                "  }",
+                "  },",
+                '  "actions": [',
+                '    {',
+                '      "type": "create_followup_task|create_handoff|record_artifact",',
+                '      "title": "short title",',
+                '      "intent": "required for create_followup_task",',
+                '      "priority": 0,',
+                '      "to_agent": "ai-dev-workflow|ballbox-company-agent",',
+                '      "reason": "required for create_handoff",',
+                '      "artifact_type": "note",',
+                '      "content": "required for record_artifact",',
+                '      "payload": {}',
+                "    }",
+                "  ]",
                 "}",
                 "Rules:",
                 "- Use complete when the task can be closed with a report.",
                 "- Use blocked when more context is required before safe progress.",
                 "- Use needs_approval when the next meaningful step has external side effects or irreversible risk.",
+                "- Use actions when Python should queue durable operational steps before the terminal outcome.",
+                "- create_handoff is for specialist repo work; keep payload small and explicit.",
+                "- create_followup_task is for durable next steps that should survive this run.",
+                "- record_artifact is for structured notes worth preserving in shared memory.",
                 "- Always include report_markdown with findings, risks, and recommended next actions.",
                 "",
                 f"Task title: {task['title']}",
@@ -362,9 +416,32 @@ class PersonalAgentRuntime:
             source_ref=PERSONAL_AGENT_ID,
             metadata={"task_run_id": run["id"], "outcome": outcome},
         )
+        action_results = self._apply_actions(task, run, decision.get("actions"))
+        self.service.create_artifact(
+            task_id=task["id"],
+            artifact_type="execution_state",
+            title="Execution state snapshot",
+            content=json.dumps(
+                {
+                    "run_id": run["id"],
+                    "outcome": outcome,
+                    "summary": summary,
+                    "action_results": action_results,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            fmt="json",
+            source_ref=PERSONAL_AGENT_ID,
+            metadata={"task_run_id": run["id"], "outcome": outcome},
+        )
         if outcome == "complete":
             self.service.finish_task_run(run["id"], status="completed", result_summary=summary)
-            self.service.update_task(task["id"], status="completed", metadata={"report_artifact_id": artifact["id"]})
+            self.service.update_task(
+                task["id"],
+                status="completed",
+                metadata={"report_artifact_id": artifact["id"], "task_run_id": run["id"], "action_results": action_results},
+            )
             self.service.ingest(
                 {
                     "type": "episode",
@@ -380,7 +457,7 @@ class PersonalAgentRuntime:
                     "metadata": {"task_id": task["id"], "task_run_id": run["id"]},
                 }
             )
-            return {"kind": "task", "task_id": task["id"], "status": "completed"}
+            return {"kind": "task", "task_id": task["id"], "status": "completed", "actions": action_results}
         if outcome == "blocked":
             blocker_reason = str(decision.get("blocker_reason") or summary).strip()
             self.service.finish_task_run(run["id"], status="blocked", result_summary=summary)
@@ -389,9 +466,9 @@ class PersonalAgentRuntime:
                 status="blocked",
                 blocked_reason=blocker_reason,
                 requires_human_input=True,
-                metadata={"task_run_id": run["id"], "decision_artifact_id": artifact["id"]},
+                metadata={"task_run_id": run["id"], "decision_artifact_id": artifact["id"], "action_results": action_results},
             )
-            return {"kind": "task", "task_id": task["id"], "status": "blocked"}
+            return {"kind": "task", "task_id": task["id"], "status": "blocked", "actions": action_results}
         approval = decision.get("approval")
         if not isinstance(approval, dict) or not approval.get("kind") or not isinstance(approval.get("payload"), dict):
             raise ValueError("Approval decision missing approval payload")
@@ -411,9 +488,81 @@ class PersonalAgentRuntime:
                 "task_run_id": run["id"],
                 "decision_artifact_id": artifact["id"],
                 "approval_id": approval_record["id"],
+                "action_results": action_results,
             },
         )
-        return {"kind": "task", "task_id": task["id"], "status": "awaiting_approval", "approval_id": approval_record["id"]}
+        return {
+            "kind": "task",
+            "task_id": task["id"],
+            "status": "awaiting_approval",
+            "approval_id": approval_record["id"],
+            "actions": action_results,
+        }
+
+    def _apply_actions(self, task: dict[str, Any], run: dict[str, Any], actions: Any) -> list[dict[str, Any]]:
+        if actions is None:
+            return []
+        if not isinstance(actions, list):
+            raise ValueError("Task decision actions must be a list")
+        results: list[dict[str, Any]] = []
+        for action in actions:
+            if not isinstance(action, dict):
+                raise ValueError("Each task action must be an object")
+            action_type = str(action.get("type") or "").strip()
+            if action_type == "create_followup_task":
+                title = str(action.get("title") or "").strip()
+                intent = str(action.get("intent") or "").strip()
+                if not title or not intent:
+                    raise ValueError("create_followup_task requires title and intent")
+                followup = self.service.create_task(
+                    title=title,
+                    intent=intent,
+                    kind="subtask",
+                    status="open",
+                    priority=int(action.get("priority") or 0),
+                    project_id=task.get("project_id") or PERSONAL_PROJECT_ID,
+                    repo_id=task.get("repo_id") or SYSTEM_REPO_ID,
+                    parent_task_id=task["id"],
+                    origin="runtime_action",
+                    owner_agent=PERSONAL_AGENT_ID,
+                    metadata={"created_by_run_id": run["id"]},
+                )
+                results.append({"type": action_type, "task_id": followup["id"]})
+                continue
+            if action_type == "create_handoff":
+                to_agent = str(action.get("to_agent") or "").strip()
+                reason = str(action.get("reason") or "").strip()
+                payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+                if to_agent not in {"ai-dev-workflow", "ballbox-company-agent"} or not reason:
+                    raise ValueError("create_handoff requires supported to_agent and reason")
+                handoff = self.service.create_handoff(
+                    task_id=task["id"],
+                    from_agent=PERSONAL_AGENT_ID,
+                    to_agent=to_agent,
+                    reason=reason,
+                    payload={"task_id": task["id"], **payload},
+                    metadata={"created_by_run_id": run["id"]},
+                )
+                results.append({"type": action_type, "handoff_id": handoff["id"], "to_agent": to_agent})
+                continue
+            if action_type == "record_artifact":
+                title = str(action.get("title") or "").strip()
+                content = str(action.get("content") or "").strip()
+                artifact_type = str(action.get("artifact_type") or "note").strip()
+                if not title or not content:
+                    raise ValueError("record_artifact requires title and content")
+                created = self.service.create_artifact(
+                    task_id=task["id"],
+                    artifact_type=artifact_type,
+                    title=title,
+                    content=content,
+                    source_ref=PERSONAL_AGENT_ID,
+                    metadata={"created_by_run_id": run["id"]},
+                )
+                results.append({"type": action_type, "artifact_id": created["id"], "artifact_type": artifact_type})
+                continue
+            raise ValueError(f"Unsupported action type: {action_type}")
+        return results
 
     def _task_title(self, text: str) -> str:
         compact = " ".join(text.split())

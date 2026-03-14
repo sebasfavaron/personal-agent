@@ -78,11 +78,17 @@ class PersonalAgentTests(unittest.TestCase):
 
         from personal_agent import config
         from personal_agent import db
+        from personal_agent import shared_memory
 
         config.DATA_DIR = Path(self.tmp.name)
         config.DB_PATH = config.DATA_DIR / "test.sqlite3"
+        config.SHARED_MEMORY_ROOT = Path("/Users/sebas/agents-database")
+        config.SHARED_MEMORY_SRC_DIR = config.SHARED_MEMORY_ROOT / "src"
+        config.SHARED_MEMORY_DB_PATH = Path(self.tmp.name) / "shared-agent-memory.sqlite3"
         db.DATA_DIR = config.DATA_DIR
         db.DB_PATH = config.DB_PATH
+        shared_memory.SHARED_MEMORY_SRC_DIR = config.SHARED_MEMORY_SRC_DIR
+        shared_memory.SHARED_MEMORY_DB_PATH = config.SHARED_MEMORY_DB_PATH
 
         db.ensure_db()
 
@@ -504,6 +510,147 @@ class PersonalAgentTests(unittest.TestCase):
         approvals = runtime.service.list_approvals(status="pending")
         self.assertEqual(len(approvals), 1)
         self.assertEqual(approvals[0]["kind"], "outreach")
+
+    def test_runtime_resolve_approval_approved_resumes_task(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Reach out to supplier",
+            intent="Need to contact an external supplier for a quote",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="blocked",
+            blocked_reason="Awaiting approval",
+            requires_human_input=True,
+            metadata={"route": {"primary_agent": "personal", "reason": "default personal route"}},
+        )
+        approval = runtime.service.create_approval(
+            task_id=task["id"],
+            kind="outreach",
+            risk_level="high",
+            payload={"summary": "Contact supplier"},
+        )
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            if "-o" not in command:
+                return type(
+                    "CompletedProcess",
+                    (),
+                    {"stdout": json.dumps({"status": "accepted", "summary": "accepted"}), "stderr": ""},
+                )()
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "complete",
+                        "summary": "Completed after approval",
+                        "report_title": "Approved execution",
+                        "report_markdown": "# Report\n\nFinished.\n",
+                        "blocker_reason": "",
+                        "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                        "actions": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            payload = runtime.resolve_approval(approval["id"], "approved", "Ship it")
+
+        self.assertEqual(payload["approval"]["status"], "approved")
+        self.assertEqual(payload["task"]["status"], "completed")
+        self.assertEqual(payload["resume"]["status"], "completed")
+
+    def test_runtime_resolve_approval_rejected_keeps_task_blocked(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Reach out to supplier",
+            intent="Need to contact an external supplier for a quote",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="blocked",
+            blocked_reason="Awaiting approval",
+            requires_human_input=True,
+            metadata={"route": {"primary_agent": "personal", "reason": "default personal route"}},
+        )
+        approval = runtime.service.create_approval(
+            task_id=task["id"],
+            kind="outreach",
+            risk_level="high",
+            payload={"summary": "Contact supplier"},
+        )
+
+        payload = runtime.resolve_approval(approval["id"], "rejected", "Do not contact them")
+
+        self.assertEqual(payload["approval"]["status"], "rejected")
+        self.assertEqual(payload["task"]["status"], "blocked")
+        self.assertEqual(payload["task"]["blocked_reason"], "Do not contact them")
+        self.assertIsNone(payload["resume"])
+
+    def test_runtime_process_once_applies_structured_actions(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Prepare implementation split",
+            intent="Need durable next steps and specialist handoff",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "reason": "default personal route"}},
+        )
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "complete",
+                        "summary": "Prepared follow-up work",
+                        "report_title": "Structured actions",
+                        "report_markdown": "# Report\n\nPrepared follow-up work.\n",
+                        "blocker_reason": "",
+                        "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                        "actions": [
+                            {
+                                "type": "create_followup_task",
+                                "title": "Implement child step",
+                                "intent": "Finish the delegated coding step",
+                                "priority": 1,
+                            },
+                            {
+                                "type": "create_handoff",
+                                "to_agent": "ai-dev-workflow",
+                                "reason": "Need repo execution",
+                                "payload": {"intent": "Finish the coding step"},
+                            },
+                            {
+                                "type": "record_artifact",
+                                "artifact_type": "implementation_note",
+                                "title": "Why split work",
+                                "content": "Need a specialist code repo for execution.",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            payload = runtime.process_once()
+
+        updated = runtime.service.get_task(task["id"])
+        children = runtime.service.list_tasks(status="open", owner_agent=PERSONAL_AGENT_ID, limit=20)
+        handoffs = runtime.service.list_handoffs(status="pending", limit=20)
+        artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=20)
+
+        self.assertTrue(payload["processed"])
+        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(len(payload["processed"][0]["actions"]), 3)
+        self.assertTrue(any(item["parent_task_id"] == task["id"] for item in children))
+        self.assertTrue(any(handoff["task_id"] == task["id"] for handoff in handoffs))
+        self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
 
     def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
