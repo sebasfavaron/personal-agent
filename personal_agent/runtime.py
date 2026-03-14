@@ -120,6 +120,33 @@ class PersonalAgentRuntime:
 
     def dashboard_snapshot(self) -> dict[str, Any]:
         snapshot = self.service.dashboard_snapshot(owner_agent=PERSONAL_AGENT_ID)
+        task_ids = [task["id"] for key in ("active_tasks", "blocked_tasks") for task in snapshot.get(key, [])]
+        latest_runs = {
+            task_id: runs[0] if runs else None for task_id in task_ids for runs in [self.service.list_task_runs(task_id=task_id, limit=1)]
+        }
+        pending_approvals = self.service.list_approvals(status="pending", limit=100)
+        approvals_by_task = {approval["task_id"]: approval for approval in pending_approvals}
+        task_counts: dict[str, int] = {}
+        for subtask in self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=200):
+            parent_id = subtask.get("parent_task_id")
+            if parent_id:
+                task_counts[parent_id] = task_counts.get(parent_id, 0) + 1
+        for key in ("active_tasks", "blocked_tasks"):
+            snapshot[key] = [
+                self._decorate_task_snapshot(
+                    task,
+                    latest_run=latest_runs.get(task["id"]),
+                    pending_approval=approvals_by_task.get(task["id"]),
+                    open_subtask_count=task_counts.get(task["id"], 0),
+                )
+                for task in snapshot.get(key, [])
+            ]
+        snapshot["summary"] = {
+            "active_task_count": len(snapshot.get("active_tasks", [])),
+            "blocked_task_count": len(snapshot.get("blocked_tasks", [])),
+            "pending_approval_count": len(snapshot.get("pending_approvals", [])),
+            "pending_handoff_count": len(snapshot.get("pending_handoffs", [])),
+        }
         snapshot["memory_context"] = self.service.context_for(
             project=PERSONAL_PROJECT_ID, repo=SYSTEM_REPO_ID, agent=PERSONAL_AGENT_ID, task="personal front door"
         )
@@ -567,6 +594,49 @@ class PersonalAgentRuntime:
     def _task_title(self, text: str) -> str:
         compact = " ".join(text.split())
         return compact if len(compact) <= 100 else compact[:97] + "..."
+
+    def _decorate_task_snapshot(
+        self,
+        task: dict[str, Any],
+        *,
+        latest_run: dict[str, Any] | None,
+        pending_approval: dict[str, Any] | None,
+        open_subtask_count: int,
+    ) -> dict[str, Any]:
+        metadata = task.get("metadata", {})
+        route = metadata.get("route", {})
+        decorated = dict(task)
+        decorated["open_subtask_count"] = open_subtask_count
+        decorated["latest_run"] = latest_run
+        decorated["pending_approval"] = pending_approval
+        decorated["next_action"] = self._next_action_for_task(task, latest_run, pending_approval)
+        decorated["route_summary"] = {
+            "primary_agent": route.get("primary_agent", "personal"),
+            "secondary_agent": route.get("secondary_agent"),
+            "planning_source": route.get("planning_source"),
+        }
+        return decorated
+
+    def _next_action_for_task(
+        self,
+        task: dict[str, Any],
+        latest_run: dict[str, Any] | None,
+        pending_approval: dict[str, Any] | None,
+    ) -> str:
+        if pending_approval is not None:
+            return f"Resolve approval {pending_approval['id']}"
+        if task["status"] == "blocked":
+            if task.get("requires_human_input"):
+                return "Provide blocker response"
+            return "Unblock task"
+        if latest_run and latest_run.get("status") == "running":
+            return "Worker running"
+        route = task.get("metadata", {}).get("route", {})
+        if route.get("delegation_target"):
+            return f"Await handoff to {route['delegation_target']}"
+        if task["status"] == "in_progress":
+            return "Review in-progress state"
+        return "Ready for worker"
 
     def _normalized_intent(self, text: str, route: dict[str, Any], memory_context: list[dict[str, Any]]) -> str:
         lines = [

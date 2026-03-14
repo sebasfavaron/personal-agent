@@ -50,6 +50,7 @@ HTML_PAGE = """<!doctype html>
     <header>
       <h1>personal-agent / v1</h1>
       <p>Front door, event worker, blocker inbox, shared-memory orchestration.</p>
+      <p id="summary" class="muted"></p>
     </header>
     <main>
       <section class="grid">
@@ -77,11 +78,25 @@ HTML_PAGE = """<!doctype html>
       async function loadStatus() {
         const response = await fetch('/api/status');
         const payload = await response.json();
-        renderList('active', payload.active_tasks, task => `<li><strong>${task.title}</strong><div class="task-id">${task.id}</div><div class="meta">${task.status}</div></li>`);
+        renderList('active', payload.active_tasks, task => `
+          <li>
+            <strong>${task.title}</strong>
+            <div class="task-id">${task.id}</div>
+            <div class="meta">${task.status} / next: ${task.next_action}</div>
+            <div class="meta">route: ${task.route_summary.primary_agent}${task.route_summary.planning_source ? ` / ${task.route_summary.planning_source}` : ''}</div>
+            <div class="meta">subtasks: ${task.open_subtask_count}${task.latest_run ? ` / run: ${task.latest_run.status}` : ''}</div>
+          </li>
+        `);
         renderBlocked(payload.blocked_tasks);
         renderList('handoffs', payload.pending_handoffs, handoff => `<li><strong>${handoff.to_agent}</strong><div class="task-id">${handoff.task_id}</div><div class="meta">${handoff.reason}</div></li>`);
         renderApprovals(payload.pending_approvals);
         renderList('artifacts', payload.recent_artifacts.slice(0, 8), artifact => `<li><strong>${artifact.title}</strong><div class="task-id">${artifact.task_id}</div><div class="meta">${artifact.artifact_type}</div></li>`);
+        document.getElementById('summary').innerHTML = `
+          <strong>${payload.summary.active_task_count}</strong> active /
+          <strong>${payload.summary.blocked_task_count}</strong> blocked /
+          <strong>${payload.summary.pending_approval_count}</strong> approvals /
+          <strong>${payload.summary.pending_handoff_count}</strong> handoffs
+        `;
       }
       function renderList(id, items, template) {
         const target = document.getElementById(id);
@@ -102,6 +117,7 @@ HTML_PAGE = """<!doctype html>
             <strong>${task.title}</strong>
             <div class="task-id">${task.id}</div>
             <p class="warn">${task.blocked_reason || 'Blocked'}</p>
+            <div class="meta">next: ${task.next_action}${task.latest_run ? ` / run: ${task.latest_run.status}` : ''}</div>
             <form data-task-id="${task.id}" class="blocker-form">
               <textarea rows="3" placeholder="Add the missing context to continue"></textarea>
               <button type="submit">Resolve blocker</button>

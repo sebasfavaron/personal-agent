@@ -652,6 +652,116 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(any(handoff["task_id"] == task["id"] for handoff in handoffs))
         self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
 
+    def test_dashboard_snapshot_exposes_next_actions_and_latest_runs(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        active = runtime.service.create_task(
+            title="Inspect runtime state",
+            intent="Need current orchestration snapshot",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "planning_source": "codex"}},
+        )
+        blocked = runtime.service.create_task(
+            title="Waiting approval",
+            intent="Need human approval",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="blocked",
+            blocked_reason="Awaiting approval",
+            requires_human_input=True,
+            metadata={"route": {"primary_agent": "personal", "planning_source": "codex"}},
+        )
+        runtime.service.start_task_run(active["id"], PERSONAL_AGENT_ID, input_payload={"mode": "codex-agentic"})
+        runtime.service.create_task(
+            title="Child item",
+            intent="Subtask",
+            owner_agent=PERSONAL_AGENT_ID,
+            parent_task_id=active["id"],
+        )
+        approval = runtime.service.create_approval(
+            task_id=blocked["id"],
+            kind="outreach",
+            risk_level="high",
+            payload={"summary": "Need approval"},
+        )
+
+        payload = runtime.dashboard_snapshot()
+
+        active_row = next(item for item in payload["active_tasks"] if item["id"] == active["id"])
+        blocked_row = next(item for item in payload["blocked_tasks"] if item["id"] == blocked["id"])
+        self.assertEqual(payload["summary"]["pending_approval_count"], 1)
+        self.assertEqual(active_row["next_action"], "Worker running")
+        self.assertEqual(active_row["open_subtask_count"], 1)
+        self.assertEqual(active_row["latest_run"]["status"], "running")
+        self.assertEqual(blocked_row["pending_approval"]["id"], approval["id"])
+        self.assertTrue(blocked_row["next_action"].startswith("Resolve approval"))
+
+    def test_runtime_end_to_end_intake_approval_resume_complete(self) -> None:
+        from personal_agent.runtime import PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        plan = {
+            "primary_agent": "personal",
+            "secondary_agent": None,
+            "reason": "local orchestration",
+            "delegation_target": None,
+            "planning_source": "codex",
+            "codex_instruction": "Handle locally.",
+            "subtasks": [
+                {"title": "Clarify scope", "detail": "Understand the task."},
+                {"title": "Run worker", "detail": "Let codex decide next move."},
+                {"title": "Summarize result", "detail": "Return the final report."},
+            ],
+        }
+        decisions = iter(
+            [
+                {
+                    "outcome": "needs_approval",
+                    "summary": "Need outreach approval",
+                    "report_title": "Approval required",
+                    "report_markdown": "# Approval\n\nNeed approval.\n",
+                    "blocker_reason": "",
+                    "approval": {"kind": "outreach", "risk_level": "high", "payload": {"summary": "Send outreach"}},
+                    "actions": [{"type": "record_artifact", "artifact_type": "decision_note", "title": "Pre-approval", "content": "Need approval first."}],
+                },
+                {
+                    "outcome": "complete",
+                    "summary": "Finished after approval",
+                    "report_title": "Complete",
+                    "report_markdown": "# Done\n\nFinished after approval.\n",
+                    "blocker_reason": "",
+                    "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                    "actions": [{"type": "create_followup_task", "title": "Review aftermath", "intent": "Sanity check the finished work", "priority": 2}],
+                },
+            ]
+        )
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(json.dumps(next(decisions)), encoding="utf-8")
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.build_intake_plan", return_value=plan):
+            intake = runtime.intake("Handle a local task that may need approval")
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            first = runtime.process_once()
+            approval_id = first["processed"][0]["approval_id"]
+            resumed = runtime.resolve_approval(approval_id, "approved", "Looks safe")
+
+        approvals = runtime.service.list_approvals(limit=10)
+        runs = runtime.service.list_task_runs(task_id=intake.task["id"], limit=10)
+        artifacts = runtime.service.list_artifacts(task_id=intake.task["id"], limit=20)
+        followups = runtime.service.list_tasks(status="open", owner_agent="personal-agent", limit=20)
+        final_task = runtime.service.get_task(intake.task["id"])
+
+        self.assertEqual(final_task["status"], "completed")
+        self.assertEqual(approvals[0]["status"], "approved")
+        self.assertEqual([run["status"] for run in runs], ["completed", "awaiting_approval"])
+        self.assertEqual(resumed["resume"]["status"], "completed")
+        self.assertTrue(any(artifact["artifact_type"] == "approval_resolution" for artifact in artifacts))
+        self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
+        self.assertTrue(any(item["parent_task_id"] == intake.task["id"] for item in followups))
+
     def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 

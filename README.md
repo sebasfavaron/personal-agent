@@ -23,6 +23,8 @@ See [INSTALL.md](INSTALL.md) for setup.
 - shared-memory orchestration over `agents-database`
 - Codex-backed intake planner with heuristic fallback
 - event worker using `codex exec` for structured task decisions, blockers, and approval requests
+- approval resolution with automatic task resume
+- dashboard/CLI snapshot with next actions, latest run state, and pending approvals
 - specialist handoff contract for sibling subagents
 
 System map and machine-recreation guide:
@@ -112,7 +114,9 @@ python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"
 python3 scripts/personal.py memory-migrate
 python3 scripts/personal.py route --input "Ballbox necesita fix en repo de pagos" --execute
+python3 scripts/personal.py status --json
 python3 scripts/personal.py approvals list
+python3 scripts/personal.py approvals resolve --approval-id <id> --status approved --note "safe to proceed"
 python3 scripts/personal.py tasks next
 python3 scripts/personal.py leisure add --title "Severance" --media-type series
 python3 scripts/personal.py leisure list --media-type series
