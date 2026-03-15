@@ -596,7 +596,21 @@ class PersonalAgentTests(unittest.TestCase):
         from personal_agent.runtime import PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
-        result = runtime.intake("Ballbox necesita fix en repo de pagos y abrir branch para QR")
+        plan = {
+            "primary_agent": "company",
+            "secondary_agent": "code",
+            "reason": "company context plus code work",
+            "delegation_target": "ballbox-company-agent",
+            "planning_source": "fallback",
+            "codex_instruction": "",
+            "subtasks": [
+                {"title": "Confirm business context", "detail": "Clarify Ballbox business need."},
+                {"title": "Delegate specialist company work", "detail": "Send company work to ballbox-company-agent."},
+                {"title": "Synthesize outcome", "detail": "Collect result and summarize it."},
+            ],
+        }
+        with patch("personal_agent.runtime.build_intake_plan", return_value=plan):
+            result = runtime.intake("Ballbox necesita fix en repo de pagos y abrir branch para QR")
 
         self.assertEqual(result.task["owner_agent"], "personal-agent")
         self.assertEqual(len(result.subtasks), 3)
@@ -1191,6 +1205,9 @@ class PersonalAgentTests(unittest.TestCase):
 
         codex_commands = [command for command in seen if command[:2] == ["codex", "exec"]]
         self.assertTrue(codex_commands)
+        self.assertNotIn("--ask-for-approval", codex_commands[0])
+        self.assertNotIn("--search", codex_commands[0])
+        self.assertIn("-C", codex_commands[0])
         self.assertIn("--add-dir", codex_commands[0])
         add_dir_value = codex_commands[0][codex_commands[0].index("--add-dir") + 1]
         self.assertEqual(add_dir_value, "/Users/sebas/agents-database")
