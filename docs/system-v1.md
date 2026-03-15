@@ -92,7 +92,7 @@ Transition behavior:
 5. Reinstall skills.
    - run `~/Code/personal-agent/scripts/install-skills.sh`
 6. Verify shared memory import path.
-   - `python3 ~/Code/personal-agent/scripts/personal.py --json status`
+   - `python3 ~/Code/personal-agent/scripts/personal.py status --json`
 7. Start the daemon.
    - `python3 ~/Code/personal-agent/scripts/personal.py daemon`
 8. Open the dashboard.
@@ -101,6 +101,7 @@ Transition behavior:
 ## Validation Checklist
 
 - `personal-agent` status command returns dashboard JSON
+- `personal.py` accepts `--json` before or after subcommands
 - dashboard loads at `:6666`
 - shared DB contains tasks, runs, artifacts, handoffs
 - `ai-dev-workflow` `run-task` returns accepted JSON
@@ -124,4 +125,5 @@ Minimum backup set:
 - personal-agent worker uses `codex exec` to return structured outcomes: complete, blocked, or needs_approval
 - Python applies those outcomes to shared DB state, artifacts, task runs, and approval records
 - personal-agent worker also passes `--add-dir ~/agents-database` so shared DB writes remain available inside the sandbox when needed
+- status surfaces expose `summary`, `next_action`, `latest_run`, `pending_approval`, `open_subtask_count`, and `route_summary`
 - specialist repos are invoked through a stable `run-task` subagent contract

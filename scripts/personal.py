@@ -199,7 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    raw_argv = sys.argv[1:]
+    as_json = False
+    if "--json" in raw_argv:
+        as_json = True
+        raw_argv = [arg for arg in raw_argv if arg != "--json"]
+    args = parser.parse_args((["--json"] if as_json else []) + raw_argv)
     legacy_commands = {"research", "report", "memory-search", "memory-migrate", "route", "approvals", "tasks", "leisure"}
     if args.command in legacy_commands:
         ensure_db()

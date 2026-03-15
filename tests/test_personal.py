@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -155,6 +156,17 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(len(loaded["sources"]), 1)
         self.assertEqual(len(loaded["artifacts"]), 1)
         self.assertEqual(loaded["artifacts"][0]["kind"], "source_capture")
+
+    def test_cli_accepts_json_flag_after_subcommand(self) -> None:
+        import scripts.personal as personal_cli
+
+        stdout = StringIO()
+        with patch("sys.argv", ["personal", "status", "--json"]), patch("sys.stdout", stdout):
+            exit_code = personal_cli.main()
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertIn("summary", payload)
 
     def test_search_web_result_parsing_and_persistence(self) -> None:
         from personal_agent import research_store
