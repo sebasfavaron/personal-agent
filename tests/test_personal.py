@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -70,6 +71,233 @@ class FakeMemoryService:
         return matches[:limit]
 
 
+class FakeOperationalMemoryService(FakeMemoryService):
+    def __init__(self, db_path: str) -> None:
+        super().__init__(db_path)
+        self.projects: dict[str, dict] = {}
+        self.repos: dict[str, dict] = {}
+        self.tasks: dict[str, dict] = {}
+        self.task_runs: dict[str, dict] = {}
+        self.artifacts: dict[str, dict] = {}
+        self.handoffs: dict[str, dict] = {}
+        self.approvals: dict[str, dict] = {}
+        self._counters = {
+            "task": 0,
+            "run": 0,
+            "artifact": 0,
+            "handoff": 0,
+            "approval": 0,
+        }
+
+    def _now(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _next_id(self, prefix: str) -> str:
+        self._counters[prefix] += 1
+        return f"{prefix}_{self._counters[prefix]:04d}"
+
+    def create_project(self, project_id: str, name: str, description: str) -> dict:
+        project = self.projects.get(project_id)
+        if project is None:
+            project = {"id": project_id, "name": name, "description": description}
+            self.projects[project_id] = project
+        return dict(project)
+
+    def create_repo(self, repo_id: str, name: str, project_id: str, path: str) -> dict:
+        repo = self.repos.get(repo_id)
+        if repo is None:
+            repo = {"id": repo_id, "name": name, "project_id": project_id, "path": path}
+            self.repos[repo_id] = repo
+        return dict(repo)
+
+    def create_task(self, title: str, intent: str, **kwargs) -> dict:
+        task_id = self._next_id("task")
+        now = self._now()
+        task = {
+            "id": task_id,
+            "title": title,
+            "intent": intent,
+            "kind": kwargs.get("kind", "task"),
+            "status": kwargs.get("status", "open"),
+            "priority": kwargs.get("priority", 0),
+            "project_id": kwargs.get("project_id"),
+            "repo_id": kwargs.get("repo_id"),
+            "parent_task_id": kwargs.get("parent_task_id"),
+            "origin": kwargs.get("origin", "test"),
+            "owner_agent": kwargs.get("owner_agent"),
+            "metadata": dict(kwargs.get("metadata") or {}),
+            "blocked_reason": kwargs.get("blocked_reason"),
+            "requires_human_input": kwargs.get("requires_human_input", False),
+            "due_at": kwargs.get("due_at"),
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.tasks[task_id] = task
+        return dict(task)
+
+    def update_task(self, task_id: str, **changes) -> dict:
+        task = self.tasks[task_id]
+        metadata = changes.pop("metadata", None)
+        for key, value in changes.items():
+            task[key] = value
+        if metadata is not None:
+            merged = dict(task.get("metadata") or {})
+            merged.update(metadata)
+            task["metadata"] = merged
+        task["updated_at"] = self._now()
+        return dict(task)
+
+    def get_task(self, task_id: str) -> dict:
+        return dict(self.tasks[task_id])
+
+    def list_tasks(self, *, status=None, owner_agent=None, requires_human_input=None, limit=50, **kwargs) -> list[dict]:
+        items = list(self.tasks.values())
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        if owner_agent is not None:
+            items = [item for item in items if item.get("owner_agent") == owner_agent]
+        if requires_human_input is not None:
+            items = [item for item in items if item.get("requires_human_input") == requires_human_input]
+        if "task_id" in kwargs and kwargs["task_id"] is not None:
+            items = [item for item in items if item["id"] == kwargs["task_id"]]
+        return [dict(item) for item in items[:limit]]
+
+    def create_artifact(self, task_id: str, artifact_type: str, title: str, content: str, source_ref: str, **kwargs) -> dict:
+        artifact_id = self._next_id("artifact")
+        now = self._now()
+        artifact = {
+            "id": artifact_id,
+            "task_id": task_id,
+            "artifact_type": artifact_type,
+            "title": title,
+            "content": content,
+            "format": kwargs.get("fmt", "md"),
+            "source_ref": source_ref,
+            "metadata": dict(kwargs.get("metadata") or {}),
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.artifacts[artifact_id] = artifact
+        return dict(artifact)
+
+    def list_artifacts(self, *, task_id=None, limit=50, **kwargs) -> list[dict]:
+        items = list(self.artifacts.values())
+        if task_id is not None:
+            items = [item for item in items if item["task_id"] == task_id]
+        return [dict(item) for item in sorted(items, key=lambda item: item["created_at"], reverse=True)[:limit]]
+
+    def create_handoff(self, task_id: str, from_agent: str, to_agent: str, reason: str, payload: dict, metadata=None) -> dict:
+        handoff_id = self._next_id("handoff")
+        now = self._now()
+        handoff = {
+            "id": handoff_id,
+            "task_id": task_id,
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "reason": reason,
+            "payload": payload,
+            "metadata": dict(metadata or {}),
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.handoffs[handoff_id] = handoff
+        return dict(handoff)
+
+    def list_handoffs(self, *, status=None, limit=50, **kwargs) -> list[dict]:
+        items = list(self.handoffs.values())
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        return [dict(item) for item in items[:limit]]
+
+    def complete_handoff(self, handoff_id: str, status: str, result_summary: str | None = None) -> dict:
+        handoff = self.handoffs[handoff_id]
+        handoff["status"] = status
+        handoff["result_summary"] = result_summary
+        handoff["updated_at"] = self._now()
+        return dict(handoff)
+
+    def start_task_run(self, task_id: str, agent_id: str, input_payload: dict | None = None) -> dict:
+        run_id = self._next_id("run")
+        now = self._now()
+        run = {
+            "id": run_id,
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "status": "running",
+            "input_payload": dict(input_payload or {}),
+            "result_summary": None,
+            "error_message": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.task_runs[run_id] = run
+        return dict(run)
+
+    def finish_task_run(self, run_id: str, status: str, result_summary: str | None = None, error_message: str | None = None) -> dict:
+        run = self.task_runs[run_id]
+        run["status"] = status
+        run["result_summary"] = result_summary
+        run["error_message"] = error_message
+        run["updated_at"] = self._now()
+        return dict(run)
+
+    def list_task_runs(self, *, task_id=None, limit=50, **kwargs) -> list[dict]:
+        items = list(self.task_runs.values())
+        if task_id is not None:
+            items = [item for item in items if item["task_id"] == task_id]
+        items.sort(key=lambda item: item["created_at"], reverse=True)
+        return [dict(item) for item in items[:limit]]
+
+    def create_approval(self, task_id: str, kind: str, risk_level: str, payload: dict) -> dict:
+        approval_id = self._next_id("approval")
+        now = self._now()
+        approval = {
+            "id": approval_id,
+            "task_id": task_id,
+            "kind": kind,
+            "risk_level": risk_level,
+            "payload": payload,
+            "status": "pending",
+            "resolution_note": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.approvals[approval_id] = approval
+        return dict(approval)
+
+    def list_approvals(self, *, status=None, limit=50, **kwargs) -> list[dict]:
+        items = list(self.approvals.values())
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        items.sort(key=lambda item: item["created_at"], reverse=True)
+        return [dict(item) for item in items[:limit]]
+
+    def resolve_approval(self, approval_id: str, status: str, resolution_note: str | None = None) -> dict:
+        approval = self.approvals[approval_id]
+        approval["status"] = status
+        approval["resolution_note"] = resolution_note
+        approval["updated_at"] = self._now()
+        return dict(approval)
+
+    def dashboard_snapshot(self, owner_agent: str) -> dict:
+        tasks = [task for task in self.tasks.values() if task.get("owner_agent") == owner_agent and task.get("parent_task_id") is None]
+        active = [dict(task) for task in tasks if task["status"] in {"open", "in_progress"}]
+        blocked = [dict(task) for task in tasks if task["status"] == "blocked"]
+        return {
+            "active_tasks": active,
+            "blocked_tasks": blocked,
+            "pending_approvals": self.list_approvals(status="pending", limit=100),
+            "pending_handoffs": self.list_handoffs(status="pending", limit=100),
+            "recent_artifacts": self.list_artifacts(limit=20),
+            "recent_runs": self.list_task_runs(limit=20),
+        }
+
+    def context_for(self, **kwargs) -> dict:
+        return {"active_decisions": [], "recent_episodes": [], "open_questions": []}
+
+
 class PersonalAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -92,8 +320,12 @@ class PersonalAgentTests(unittest.TestCase):
         shared_memory.SHARED_MEMORY_DB_PATH = config.SHARED_MEMORY_DB_PATH
 
         db.ensure_db()
+        self.fake_operational_memory = FakeOperationalMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
+        self.runtime_memory_patcher = patch("personal_agent.runtime.get_memory_service", return_value=self.fake_operational_memory)
+        self.runtime_memory_patcher.start()
 
     def tearDown(self) -> None:
+        self.runtime_memory_patcher.stop()
         self.tmp.cleanup()
         os.environ.pop("PERSONAL_AGENT_DATA_DIR", None)
         os.environ.pop("PERSONAL_AGENT_SHARED_MEMORY_ROOT", None)
