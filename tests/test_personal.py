@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -896,6 +896,72 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(any(handoff["task_id"] == task["id"] for handoff in handoffs))
         self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
 
+    def test_runtime_dispatch_handoff_marks_it_completed_and_records_artifact(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Delegate repo work",
+            intent="Need a specialist repo agent",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "code", "delegation_target": "ai-dev-workflow"}},
+        )
+        handoff = runtime.service.create_handoff(
+            task_id=task["id"],
+            from_agent=PERSONAL_AGENT_ID,
+            to_agent="ai-dev-workflow",
+            reason="Need repo execution",
+            payload={"task_id": task["id"], "intent": task["intent"]},
+        )
+
+        fake_completed = type(
+            "CompletedProcess",
+            (),
+            {"stdout": json.dumps({"status": "accepted", "summary": "Repo task accepted"}), "stderr": ""},
+        )()
+
+        with patch("personal_agent.runtime.subprocess.run", return_value=fake_completed):
+            result = runtime.process_once()
+
+        updated_handoffs = runtime.service.list_handoffs(limit=10)
+        artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=10)
+        self.assertEqual(result["processed"][0]["kind"], "handoff")
+        self.assertEqual(updated_handoffs[0]["status"], "accepted")
+        self.assertTrue(any(item["artifact_type"] == "handoff_result" for item in artifacts))
+
+    def test_runtime_resolve_preference_blocker_uses_memory_when_available(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        runtime.service.ingest(
+            {
+                "id": "mem_style_pref",
+                "type": "decision",
+                "scope": "global",
+                "title": "Style preference",
+                "content": "Sebas prefers concise, direct updates.",
+                "summary": "Concise, direct updates.",
+                "source_ref": PERSONAL_AGENT_ID,
+                "metadata": {"kind": "preference"},
+            }
+        )
+        task = runtime.service.create_task(
+            title="Need style guidance",
+            intent="Need communication preference",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="blocked",
+            blocked_reason="Missing preference",
+            requires_human_input=True,
+        )
+
+        resolved = runtime.resolve_preference_blocker(task["id"], "concise, direct updates.", "Need communication preference")
+
+        artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=10)
+        self.assertEqual(resolved["status"], "open")
+        self.assertFalse(resolved["requires_human_input"])
+        self.assertEqual(resolved["metadata"]["resolved_by_memory_id"], "mem_style_pref")
+        self.assertTrue(any(item["artifact_type"] == "memory_resolution" for item in artifacts))
+
     def test_dashboard_snapshot_exposes_next_actions_and_latest_runs(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 
@@ -1005,6 +1071,84 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(any(artifact["artifact_type"] == "approval_resolution" for artifact in artifacts))
         self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
         self.assertTrue(any(item["parent_task_id"] == intake.task["id"] for item in followups))
+
+    def test_daemon_http_api_covers_status_intake_blocker_and_approval(self) -> None:
+        from personal_agent.daemon import PersonalAgentHandler
+        from personal_agent.runtime import PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        server = type("Server", (), {"runtime": runtime})()
+
+        def invoke(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+            handler = PersonalAgentHandler.__new__(PersonalAgentHandler)
+            handler.server = server
+            handler.path = path
+            body = json.dumps(payload or {}).encode("utf-8")
+            handler.headers = {"Content-Length": str(len(body))}
+            handler.rfile = BytesIO(body)
+            handler.wfile = BytesIO()
+            handler._status = None
+            handler._error = None
+            handler.send_response = lambda status: setattr(handler, "_status", int(status))
+            handler.send_header = lambda *args, **kwargs: None
+            handler.end_headers = lambda: None
+            handler.send_error = lambda status: setattr(handler, "_error", int(status))
+            getattr(handler, method)()
+            if handler._error is not None:
+                return handler._error, {}
+            return handler._status, json.loads(handler.wfile.getvalue().decode("utf-8"))
+
+        status_code, payload = invoke("do_GET", "/api/status")
+        self.assertEqual(status_code, 200)
+        self.assertIn("summary", payload)
+
+        status_code, intake_payload = invoke("do_POST", "/api/intake", {"input": "Handle a local task"})
+        self.assertEqual(status_code, 201)
+        task_id = intake_payload["task"]["id"]
+
+        runtime.service.update_task(task_id, status="blocked", blocked_reason="Need input", requires_human_input=True)
+        status_code, blocker_payload = invoke("do_POST", f"/api/tasks/{task_id}/blocker-response", {"response": "Extra context"})
+        self.assertEqual(status_code, 200)
+        self.assertEqual(blocker_payload["task"]["status"], "open")
+
+        approval = runtime.service.create_approval(
+            task_id=task_id,
+            kind="outreach",
+            risk_level="high",
+            payload={"summary": "Need approval"},
+        )
+        runtime.service.update_task(task_id, status="blocked", blocked_reason="Awaiting approval", requires_human_input=True)
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "complete",
+                        "summary": "Done after approval",
+                        "report_title": "Done",
+                        "report_markdown": "# Done\n\nFinished.\n",
+                        "blocker_reason": "",
+                        "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                        "actions": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            status_code, approval_payload = invoke(
+                "do_POST",
+                f"/api/approvals/{approval['id']}/resolve",
+                {"status": "approved", "note": "safe"},
+            )
+        self.assertEqual(status_code, 200)
+        self.assertEqual(approval_payload["approval"]["status"], "approved")
+        self.assertEqual(approval_payload["task"]["status"], "completed")
+
+        status_code, _ = invoke("do_GET", "/missing")
+        self.assertEqual(status_code, 404)
 
     def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
