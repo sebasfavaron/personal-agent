@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -162,3 +163,96 @@ def mirror_source(run_id: str, url: str, title: str, notes: str, domain: str) ->
             },
         }
     )
+
+
+def get_legacy_run_from_shared_memory(run_id: str) -> dict[str, Any] | None:
+    service = get_memory_service()
+    if service is None or not hasattr(service, "list_memories"):
+        return None
+
+    source_ref = f"personal-agent:run:{run_id}"
+    run_records = service.list_memories(
+        source_ref=source_ref,
+        metadata={"legacy_kind": "research_run", "legacy_run_id": run_id},
+        limit=1,
+    )
+    if not run_records:
+        return None
+
+    related = service.list_memories(source_ref=source_ref, limit=200)
+    run_memory = run_records[0]
+    claims = [memory for memory in related if memory["metadata"].get("legacy_kind") == "claim"]
+    sources = [memory for memory in related if memory["metadata"].get("legacy_kind") == "source"]
+    tasks = service.list_memories(metadata={"legacy_kind": "task", "legacy_run_id": run_id}, limit=200)
+
+    goal = _extract_line_value(run_memory["content"], "Goal") or run_memory["title"].removeprefix("Research run: ").strip()
+    scope = _extract_line_value(run_memory["content"], "Scope")
+    assumptions = _extract_line_value(run_memory["content"], "Assumptions")
+    summary = _extract_line_value(run_memory["content"], "Summary") or run_memory["summary"]
+
+    return {
+        "run": {
+            "id": run_id,
+            "goal": goal,
+            "scope": scope,
+            "assumptions": assumptions,
+            "status": run_memory["metadata"].get("run_status", "archived"),
+            "summary": summary,
+            "created_at": run_memory["created_at"],
+            "updated_at": run_memory["updated_at"],
+            "completed_at": run_memory["observed_at"] if run_memory["metadata"].get("run_status") == "completed" else None,
+            "transition_source": "shared-memory-legacy-bridge",
+        },
+        "steps": [],
+        "sources": [_legacy_source_record(memory) for memory in sorted(sources, key=lambda item: item["created_at"])],
+        "claims": [_legacy_claim_record(memory) for memory in sorted(claims, key=lambda item: item["created_at"])],
+        "tasks": [_legacy_task_record(memory) for memory in sorted(tasks, key=lambda item: item["created_at"])],
+        "artifacts": [],
+    }
+
+
+def _extract_line_value(content: str, label: str) -> str:
+    match = re.search(rf"^{re.escape(label)}:\s*(.*)$", content, flags=re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def _legacy_source_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "url": metadata.get("url", ""),
+        "title": memory["title"],
+        "domain": metadata.get("domain"),
+        "notes": metadata.get("notes", ""),
+        "retrieved_at": memory["created_at"],
+    }
+
+
+def _legacy_claim_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "claim": memory["content"],
+        "confidence": memory["confidence"],
+        "status": metadata.get("claim_status", "tentative"),
+        "source_url": metadata.get("source_url", ""),
+        "created_at": memory["created_at"],
+    }
+
+
+def _legacy_task_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    task_text = memory["content"].splitlines()[0].strip() if memory["content"] else memory["summary"]
+    return {
+        "id": metadata.get("legacy_task_id", memory["id"]),
+        "run_id": metadata.get("legacy_run_id"),
+        "task": task_text,
+        "kind": metadata.get("task_kind", "task"),
+        "status": metadata.get("task_status", "open"),
+        "parent_task_id": None,
+        "notes": "",
+        "due_at": None,
+        "created_at": memory["created_at"],
+    }
