@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -44,22 +46,45 @@ def shared_memory_status() -> dict[str, Any]:
     }
 
 
+def _shared_memory_exact_match(query: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r"[a-z]+_[0-9a-f]{32}|mem_[a-z0-9_]+", query.strip().lower()):
+        return None
+    if not SHARED_MEMORY_DB_PATH.exists():
+        return None
+    with sqlite3.connect(SHARED_MEMORY_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM memories WHERE id = ?", (query.strip(),)).fetchone()
+    if row is None:
+        return None
+    memory = dict(row)
+    memory["metadata"] = json.loads(memory.pop("metadata_json"))
+    embedding_json = memory.pop("embedding_json", None)
+    memory["embedding"] = json.loads(embedding_json) if embedding_json else None
+    return {"memory": memory, "matched_scope": memory["scope"], "explanation": "Exact memory id match"}
+
+
 def search_shared_memory(query: str, limit: int = 10) -> dict[str, Any]:
     service = get_memory_service()
+    exact = _shared_memory_exact_match(query)
     if service is None:
         status = shared_memory_status()
         return {
             "enabled": False,
-            "results": [],
+            "results": [exact] if exact else [],
             "db_path": status["db_path"],
             "reason": f"shared-agent-memory package not found at {status['src_dir']}",
         }
     payload = service.search(query, scopes=["global", "project", "repo", "agent", "session"], limit=limit)
+    results = payload["results"]
+    if exact is not None and all(item.get("memory", {}).get("id") != exact["memory"]["id"] for item in results):
+        results = [exact, *results]
+    if len(results) > limit:
+        results = results[:limit]
     return {
         "enabled": True,
         "db_path": str(SHARED_MEMORY_DB_PATH),
         "retrieval_id": payload["retrieval_id"],
-        "results": payload["results"],
+        "results": results,
     }
 
 
