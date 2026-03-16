@@ -858,7 +858,7 @@ class PersonalAgentRuntime:
         if latest_run and latest_run.get("status") == "running":
             return "Worker running"
         route = task.get("metadata", {}).get("route", {})
-        if route.get("delegation_target"):
+        if route.get("delegation_target") == "ballbox-company-agent":
             return f"Await handoff to {route['delegation_target']}"
         if task["status"] == "in_progress":
             return "Review in-progress state"
