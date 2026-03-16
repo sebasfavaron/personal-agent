@@ -1083,6 +1083,23 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn("workspace-write", calls[0])
         self.assertEqual(calls[0][calls[0].index("-C") + 1], str(Path("/Users/sebas/ai-dev-workflow")))
 
+    def test_legacy_code_delegation_target_does_not_show_await_handoff_next_action(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Legacy code route",
+            intent="Old metadata should not imply active handoff",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="open",
+            metadata={"route": {"primary_agent": "code", "delegation_target": "ai-dev-workflow"}},
+        )
+
+        snapshot = runtime.dashboard_snapshot()
+        row = next(item for item in snapshot["active_tasks"] if item["id"] == task["id"])
+
+        self.assertEqual(row["next_action"], "Ready for worker")
+
     def test_runtime_resolve_preference_blocker_uses_memory_when_available(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 
