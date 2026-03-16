@@ -1260,6 +1260,27 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(updated_run["status"], "interrupted")
         self.assertTrue(any(item["metadata"].get("outcome") == "interrupted" for item in artifacts))
 
+    def test_runtime_recovery_ignores_runs_from_other_agents(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Leave foreign run alone",
+            intent="Another agent owns this run",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="in_progress",
+            metadata={"route": {"primary_agent": "personal"}},
+        )
+        run = runtime.service.start_task_run(task["id"], "other-agent", input_payload={"mode": "codex-agentic"})
+
+        runtime._recover_interrupted_runs()
+
+        updated_task = runtime.service.get_task(task["id"])
+        updated_run = runtime.service.list_task_runs(task_id=task["id"], limit=1)[0]
+        self.assertEqual(updated_task["status"], "in_progress")
+        self.assertEqual(updated_run["id"], run["id"])
+        self.assertEqual(updated_run["status"], "running")
+
     def test_runtime_code_route_runs_codex_in_ai_dev_workflow_repo(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
         from personal_agent.repo_targets import default_code_repo
@@ -1462,6 +1483,45 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(blocked_row["next_action"].startswith("Resolve approval"))
         self.assertEqual(payload["recent_deliverables"][0]["title"], "Delivered report")
         self.assertEqual(payload["recent_deliverables"][0]["task_title"], active["title"])
+
+    def test_dashboard_snapshot_recent_deliverables_excludes_other_agents(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        own_task = runtime.service.create_task(
+            title="Own deliverable",
+            intent="Show in dashboard",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "planning_source": "codex"}},
+        )
+        other_task = runtime.service.create_task(
+            title="Foreign deliverable",
+            intent="Should stay hidden",
+            owner_agent="other-agent",
+            metadata={"route": {"primary_agent": "personal", "planning_source": "codex"}},
+        )
+        runtime.service.create_artifact(
+            task_id=other_task["id"],
+            artifact_type="report",
+            title="Foreign report",
+            content="Ignore this.",
+            source_ref="other-agent",
+            metadata={"classification": "deliverable"},
+        )
+        runtime.service.create_artifact(
+            task_id=own_task["id"],
+            artifact_type="report",
+            title="Own report",
+            content="Show this.",
+            source_ref=PERSONAL_AGENT_ID,
+            metadata={"classification": "deliverable"},
+        )
+
+        payload = runtime.dashboard_snapshot()
+
+        self.assertEqual(len(payload["recent_deliverables"]), 1)
+        self.assertEqual(payload["recent_deliverables"][0]["task_id"], own_task["id"])
+        self.assertEqual(payload["recent_deliverables"][0]["title"], "Own report")
 
     def test_runtime_end_to_end_intake_approval_resume_complete(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime

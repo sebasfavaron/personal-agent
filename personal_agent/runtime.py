@@ -840,6 +840,8 @@ class PersonalAgentRuntime:
             if classification != "deliverable" and artifact.get("artifact_type") != "report":
                 continue
             task = self.service.get_task(artifact["task_id"])
+            if task.get("owner_agent") != PERSONAL_AGENT_ID:
+                continue
             if task.get("parent_task_id") is not None:
                 continue
             item = dict(artifact)
@@ -940,6 +942,8 @@ class PersonalAgentRuntime:
     def _recover_interrupted_runs(self) -> None:
         running_runs = self.service.list_task_runs(status="running", limit=200)
         for run in running_runs:
+            if run.get("agent_id") != PERSONAL_AGENT_ID:
+                continue
             task = self.service.get_task(run["task_id"])
             self.service.finish_task_run(
                 run["id"],
