@@ -45,7 +45,6 @@ CODE_HINTS = {
 VALID_AGENTS = {"personal", "company", "code"}
 DELEGATION_BY_AGENT = {
     "company": "ballbox-company-agent",
-    "code": "ai-dev-workflow",
 }
 
 
@@ -92,7 +91,7 @@ def fallback_subtasks(text: str, route: dict[str, Any]) -> list[dict[str, str]]:
     if route["primary_agent"] == "code":
         return [
             {"title": "Inspect technical context", "detail": f"Understand repo or code context for: {text}"},
-            {"title": "Delegate code execution", "detail": f"Send code-shaped work to ai-dev-workflow for: {text}"},
+            {"title": "Run code subagent", "detail": f"Execute code-shaped work inside the codex subagent for: {text}"},
             {"title": "Summarize technical outcome", "detail": f"Collect code result and produce final report for: {text}"},
         ]
     return [
@@ -169,13 +168,13 @@ def _planning_prompt(text: str, memory_context: list[dict[str, Any]]) -> str:
             "Decide routing and the first execution plan.",
             "Keep Python as the shell for persistence, approvals, auditability, and shared DB state.",
             "Available primary_agent values: personal, company, code.",
-            "Available delegation_target values: null, ballbox-company-agent, ai-dev-workflow.",
+            "Available delegation_target values: null, ballbox-company-agent.",
             "Return JSON only with this exact shape:",
             '{',
             '  "primary_agent": "personal|company|code",',
             '  "secondary_agent": "personal|company|code|null",',
             '  "reason": "short reason",',
-            '  "delegation_target": "ballbox-company-agent|ai-dev-workflow|null",',
+            '  "delegation_target": "ballbox-company-agent|null",',
             '  "codex_instruction": "short execution note for the shell",',
             '  "subtasks": [',
             '    {"title": "short title", "detail": "one sentence"}',
