@@ -46,7 +46,7 @@ python3 -m unittest discover -s tests
 ## Start A Sample Research Run
 
 ```bash
-python3 scripts/personal.py --json research start \
+python3 scripts/personal.py research start --json \
   --goal "Investigate local-first personal assistant patterns" \
   --scope "starter implementation ideas" \
   --assumptions "foundation repo only"
@@ -55,22 +55,22 @@ python3 scripts/personal.py --json research start \
 Then add sources and claims:
 
 ```bash
-python3 scripts/personal.py --json research search-web \
+python3 scripts/personal.py research search-web --json \
   --run-id "<run-id>" \
   --query "local-first personal assistant patterns" \
   --max-results 5
 
-python3 scripts/personal.py --json research capture-url \
+python3 scripts/personal.py research capture-url --json \
   --run-id "<run-id>" \
   --url "https://example.com" \
   --notes "why this source matters"
 
-python3 scripts/personal.py --json research add-source \
+python3 scripts/personal.py research add-source --json \
   --run-id "<run-id>" \
   --url "https://example.com" \
   --title "Example source"
 
-python3 scripts/personal.py --json research add-claim \
+python3 scripts/personal.py research add-claim --json \
   --run-id "<run-id>" \
   --claim "Example finding" \
   --confidence 0.6 \
@@ -115,7 +115,7 @@ If you want Codex to discover them globally on your machine:
 ## Optional: Verify Routing
 
 ```bash
-python3 scripts/personal.py --json route \
+python3 scripts/personal.py route --json \
   --input "Ballbox necesita fix en repo de pagos" \
   --execute
 ```

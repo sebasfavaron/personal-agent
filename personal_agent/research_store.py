@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .db import connect
-from .shared_memory import mirror_claim, mirror_run_summary, mirror_source, search_shared_memory
+from .shared_memory import get_legacy_run_from_shared_memory, mirror_claim, mirror_run_summary, mirror_source, search_shared_memory
 from .source_capture import fetch_url_capture
 from .web_search import search_web
 
@@ -451,6 +451,9 @@ def get_run(run_id: str) -> dict[str, Any]:
     with connect() as conn:
         run = conn.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)).fetchone()
         if run is None:
+            bridged = get_legacy_run_from_shared_memory(run_id)
+            if bridged is not None:
+                return bridged
             raise ValueError(f"Unknown research run: {run_id}")
         steps = [dict(row) for row in conn.execute("SELECT * FROM research_steps WHERE run_id = ? ORDER BY id", (run_id,))]
         sources = [dict(row) for row in conn.execute("SELECT * FROM sources WHERE run_id = ? ORDER BY id", (run_id,))]

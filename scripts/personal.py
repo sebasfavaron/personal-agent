@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from personal_agent.db import ensure_db
+from personal_agent.daemon import run_server
 from personal_agent.migration import migrate_legacy_memory
 from personal_agent.reporting import build_report
 from personal_agent.research_store import (
@@ -35,6 +36,7 @@ from personal_agent.research_store import (
     start_research,
 )
 from personal_agent.router import route_request
+from personal_agent.runtime import PersonalAgentRuntime
 
 
 def _print(payload, as_json: bool) -> None:
@@ -107,6 +109,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     memory_migrate = subparsers.add_parser("memory-migrate")
 
+    daemon = subparsers.add_parser("daemon")
+    daemon.add_argument("--host", default="127.0.0.1")
+    daemon.add_argument("--port", type=int, default=8082)
+    daemon.add_argument("--interval-seconds", type=float, default=5.0)
+
+    intake = subparsers.add_parser("intake")
+    intake.add_argument("--input", required=True)
+    intake.add_argument("--origin", default="human")
+
+    status = subparsers.add_parser("status")
+
+    worker = subparsers.add_parser("worker")
+    worker_sub = worker.add_subparsers(dest="worker_command", required=True)
+    worker_sub.add_parser("process-once")
+
+    blocker = subparsers.add_parser("blocker")
+    blocker_sub = blocker.add_subparsers(dest="blocker_command", required=True)
+    blocker_reply = blocker_sub.add_parser("reply")
+    blocker_reply.add_argument("--task-id", required=True)
+    blocker_reply.add_argument("--response", required=True)
+
     route = subparsers.add_parser("route")
     route.add_argument("--input", required=True)
     route.add_argument("--execute", action="store_true")
@@ -120,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
     approvals_request.add_argument("--kind", required=True)
     approvals_request.add_argument("--risk-level", default="high")
     approvals_request.add_argument("--payload", required=True, help="JSON payload")
+
+    approvals_resolve = approvals_sub.add_parser("resolve")
+    approvals_resolve.add_argument("--approval-id", required=True)
+    approvals_resolve.add_argument("--status", required=True, choices=["approved", "rejected"])
+    approvals_resolve.add_argument("--note", default="")
 
     tasks = subparsers.add_parser("tasks")
     tasks_sub = tasks.add_subparsers(dest="tasks_command", required=True)
@@ -170,9 +198,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    ensure_db()
     parser = build_parser()
-    args = parser.parse_args()
+    raw_argv = sys.argv[1:]
+    as_json = False
+    if "--json" in raw_argv:
+        as_json = True
+        raw_argv = [arg for arg in raw_argv if arg != "--json"]
+    args = parser.parse_args((["--json"] if as_json else []) + raw_argv)
+    legacy_commands = {"research", "report", "memory-search", "memory-migrate", "route", "tasks", "leisure"}
+    if args.command in legacy_commands or (args.command == "approvals" and args.approvals_command in {"list", "request"}):
+        ensure_db()
 
     if args.command == "research":
         if args.research_command == "start":
@@ -215,6 +250,46 @@ def main() -> int:
         _print(migrate_legacy_memory(), args.as_json)
         return 0
 
+    if args.command == "daemon":
+        run_server(args.host, args.port, args.interval_seconds)
+        return 0
+
+    runtime = None
+    if args.command in {"intake", "status", "worker", "blocker"}:
+        try:
+            runtime = PersonalAgentRuntime()
+        except RuntimeError as exc:
+            print(f"runtime init failed: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "intake":
+        result = runtime.intake(args.input, origin=args.origin)
+        _print(
+            {
+                "task": result.task,
+                "subtasks": result.subtasks,
+                "artifacts": result.artifacts,
+                "handoff": result.handoff,
+                "memory_context": result.memory_context,
+            },
+            args.as_json,
+        )
+        return 0
+
+    if args.command == "status":
+        _print(runtime.dashboard_snapshot(), args.as_json)
+        return 0
+
+    if args.command == "worker":
+        if args.worker_command == "process-once":
+            _print(runtime.process_once(), args.as_json)
+            return 0
+
+    if args.command == "blocker":
+        if args.blocker_command == "reply":
+            _print(runtime.respond_to_blocker(args.task_id, args.response), args.as_json)
+            return 0
+
     if args.command == "route":
         _print(route_request(args.input, execute=args.execute), args.as_json)
         return 0
@@ -226,6 +301,14 @@ def main() -> int:
         if args.approvals_command == "request":
             payload = json.loads(args.payload)
             _print(request_approval(args.kind, payload, args.risk_level), args.as_json)
+            return 0
+        if args.approvals_command == "resolve":
+            try:
+                runtime = PersonalAgentRuntime()
+            except RuntimeError as exc:
+                print(f"runtime init failed: {exc}", file=sys.stderr)
+                return 1
+            _print(runtime.resolve_approval(args.approval_id, args.status, args.note), args.as_json)
             return 0
 
     if args.command == "tasks":

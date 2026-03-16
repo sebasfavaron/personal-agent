@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 
 
@@ -20,3 +21,9 @@ SHARED_MEMORY_DATA_DIR = SHARED_MEMORY_ROOT / "data"
 SHARED_MEMORY_DB_PATH = Path(
     os.environ.get("PERSONAL_AGENT_SHARED_MEMORY_DB_PATH", SHARED_MEMORY_DATA_DIR / "shared-agent-memory.sqlite3")
 )
+CODEX_ADD_DIRS = tuple(
+    Path(part)
+    for part in os.environ.get("PERSONAL_AGENT_CODEX_ADD_DIRS", str(SHARED_MEMORY_ROOT)).split(os.pathsep)
+    if part.strip()
+)
+CODEX_BIN = os.environ.get("PERSONAL_AGENT_CODEX_BIN") or shutil.which("codex") or "codex"

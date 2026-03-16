@@ -10,14 +10,33 @@ See [INSTALL.md](INSTALL.md) for setup.
 
 - Repo-local ownership for personal capabilities
 - Global skill discovery via symlinks from `~/.codex/skills`
-- SQLite as operational source of truth for research/task runtime
-- shared agent memory lives in sibling repo `~/agents-database`
+- Shared DB in sibling repo `~/agents-database` is the durable source of truth for new work
+- legacy local SQLite stays only for transition, migration, and old-run inspection
 - Human approval required for outreach / external side effects
 - `ai-dev-workflow` stays focused on project workflows
 
+## V1 Front Door
+
+`personal-agent` now grows toward a front-door runtime:
+
+- daemon + dashboard at `127.0.0.1:8082`
+- shared-memory orchestration over `agents-database`
+- Codex-backed intake planner with heuristic fallback
+- event worker using `codex exec` for structured task decisions, blockers, and approval requests
+- approval resolution with automatic task resume
+- dashboard/CLI snapshot with next actions, latest run state, and pending approvals
+- specialist handoff contract for sibling subagents
+
+System map and machine-recreation guide:
+
+- [docs/system-v1.md](docs/system-v1.md)
+
 ## What Exists Today
 
-This repository currently implements a local foundation, not a full personal assistant.
+This repository now contains both:
+
+- legacy local-first research/task runtime
+- emerging V1 front-door runtime on top of shared memory
 
 - SQLite-backed persistence for research runs
 - source, claim, task, and approval tracking
@@ -30,25 +49,26 @@ This repository currently implements a local foundation, not a full personal ass
 
 ## Shared Memory Integration
 
-`personal-agent` now treats its own SQLite database as the operational store for research runs, tasks, approvals, and artifacts.
-
 Durable shared memory lives in the sibling project at `~/agents-database`.
 
 - new research claims and sources are mirrored into shared memory when available
 - completed research runs are mirrored as durable memory summaries
 - `memory-search` now queries shared memory first and also returns legacy local matches
 - `memory-migrate` imports existing legacy research memory into the shared system
+- `research status --run-id <id>` falls back to the mirrored shared-memory record when the old local run is no longer present
 
 Default shared-memory path discovery:
 
 - tries `~/agents-database/src` first
-- then falls back to `~/Code/agents-database/src`
+- then falls back to sibling discovery heuristics if the direct path is unavailable
 - database defaults to `<shared-memory-root>/data/shared-agent-memory.sqlite3`
+- when launching Codex from `personal-agent`, add `--add-dir ~/agents-database` so sandboxed Codex runs can write the canonical DB in place
 
 These can be overridden with:
 
 - `PERSONAL_AGENT_SHARED_MEMORY_ROOT`
 - `PERSONAL_AGENT_SHARED_MEMORY_DB_PATH`
+- `PERSONAL_AGENT_CODEX_ADD_DIRS`
 
 ## What Is Still A Promise
 
@@ -94,11 +114,26 @@ python3 scripts/personal.py report --run-id <id> --format md
 python3 scripts/personal.py memory-search --query "X"
 python3 scripts/personal.py memory-migrate
 python3 scripts/personal.py route --input "Ballbox necesita fix en repo de pagos" --execute
+python3 scripts/personal.py --json status
 python3 scripts/personal.py approvals list
+python3 scripts/personal.py --json approvals resolve --approval-id <id> --status approved --note "safe to proceed"
 python3 scripts/personal.py tasks next
 python3 scripts/personal.py leisure add --title "Severance" --media-type series
 python3 scripts/personal.py leisure list --media-type series
 ```
+
+## Operator Note
+
+- daemon is long-running
+- this agent can start, stop, or restart it across sessions
+- canonical UI endpoint: `http://127.0.0.1:8082/`
+- canonical status JSON endpoint: `http://127.0.0.1:8082/api/status`
+- helper script:
+  - `./scripts/daemon-8082.sh start`
+  - `./scripts/daemon-8082.sh stop`
+  - `./scripts/daemon-8082.sh restart`
+  - `./scripts/daemon-8082.sh status`
+  - `./scripts/daemon-8082.sh logs`
 
 ## Intended Usage Model
 
@@ -117,7 +152,7 @@ python3 scripts/personal.py leisure list --media-type series
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests
+./scripts/run-checks.sh
 ```
 
 ## Push Gate
