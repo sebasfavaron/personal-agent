@@ -244,6 +244,11 @@ class PersonalAgentTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail(f"task {task_id} did not reach status {expected}")
 
+    def _fake_repo_dir(self) -> str:
+        repo_dir = Path(self.tmp.name) / "repo-under-test"
+        repo_dir.mkdir(exist_ok=True)
+        return str(repo_dir)
+
     def test_runtime_intake_creates_draft_task_with_suggested_cwd(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime
 
@@ -262,6 +267,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         runtime = PersonalAgentRuntime()
         intake = runtime.intake("Implement the fix in ai-dev-workflow")
+        fake_repo_dir = self._fake_repo_dir()
         seen: list[list[str]] = []
 
         class FakePopen:
@@ -286,13 +292,13 @@ class PersonalAgentTests(unittest.TestCase):
                 self._returncode = -15
 
         with patch("personal_agent.runtime.subprocess.Popen", FakePopen):
-            payload = runtime.start_task(intake.task["id"], "/Users/sebas/Code/ai-dev-workflow")
+            payload = runtime.start_task(intake.task["id"], fake_repo_dir)
 
         task = self._wait_for_task_status(runtime, intake.task["id"], "completed")
         self.assertEqual(payload["run"]["task_id"], intake.task["id"])
         self.assertTrue(seen)
         self.assertIn("danger-full-access", seen[0])
-        self.assertEqual(seen[0][seen[0].index("-C") + 1], "/Users/sebas/Code/ai-dev-workflow")
+        self.assertEqual(seen[0][seen[0].index("-C") + 1], str(Path(fake_repo_dir).resolve()))
         artifacts = runtime.service.list_artifacts(task_id=intake.task["id"], limit=5)
         self.assertEqual(artifacts[0]["artifact_type"], "report")
         self.assertEqual(task["metadata"]["execution"]["result_artifact_id"], artifacts[0]["id"])
@@ -302,6 +308,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         runtime = PersonalAgentRuntime()
         intake = runtime.intake("Implement the fix in ai-dev-workflow")
+        fake_repo_dir = self._fake_repo_dir()
 
         class FakePopen:
             def __init__(self, command, stdout, stderr, text):
@@ -323,7 +330,7 @@ class PersonalAgentTests(unittest.TestCase):
                 self._returncode = -15
 
         with patch("personal_agent.runtime.subprocess.Popen", FakePopen):
-            runtime.start_task(intake.task["id"], "/Users/sebas/Code/ai-dev-workflow")
+            runtime.start_task(intake.task["id"], fake_repo_dir)
 
         task = self._wait_for_task_status(runtime, intake.task["id"], "failed")
         run = runtime.service.list_task_runs(task_id=intake.task["id"], limit=1)[0]
@@ -428,6 +435,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         runtime = PersonalAgentRuntime()
         server = type("Server", (), {"runtime": runtime})()
+        fake_repo_dir = self._fake_repo_dir()
 
         class FakePopen:
             def __init__(self, command, stdout, stderr, text):
@@ -485,7 +493,7 @@ class PersonalAgentTests(unittest.TestCase):
             start_handler = TestHandler(
                 "POST",
                 f"/api/tasks/{intake_task_id}/start",
-                {"cwd": "/Users/sebas/Code/ai-dev-workflow", "prompt": "Custom prompt"},
+                {"cwd": fake_repo_dir, "prompt": "Custom prompt"},
             )
             status_handler = TestHandler("GET", "/api/status")
 
