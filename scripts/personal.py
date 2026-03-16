@@ -118,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
     intake.add_argument("--input", required=True)
     intake.add_argument("--origin", default="human")
 
+    start = subparsers.add_parser("start")
+    start.add_argument("--task-id", required=True)
+    start.add_argument("--cwd", required=True)
+    start.add_argument("--prompt", default=None)
+
     status = subparsers.add_parser("status")
 
     worker = subparsers.add_parser("worker")
@@ -255,7 +260,7 @@ def main() -> int:
         return 0
 
     runtime = None
-    if args.command in {"intake", "status", "worker", "blocker"}:
+    if args.command in {"intake", "start", "status"}:
         try:
             runtime = PersonalAgentRuntime()
         except RuntimeError as exc:
@@ -267,13 +272,14 @@ def main() -> int:
         _print(
             {
                 "task": result.task,
-                "subtasks": result.subtasks,
-                "artifacts": result.artifacts,
-                "handoff": result.handoff,
                 "memory_context": result.memory_context,
             },
             args.as_json,
         )
+        return 0
+
+    if args.command == "start":
+        _print(runtime.start_task(args.task_id, args.cwd, args.prompt), args.as_json)
         return 0
 
     if args.command == "status":
@@ -281,14 +287,12 @@ def main() -> int:
         return 0
 
     if args.command == "worker":
-        if args.worker_command == "process-once":
-            _print(runtime.process_once(), args.as_json)
-            return 0
+        print("worker flow removed; use intake/start/status", file=sys.stderr)
+        return 1
 
     if args.command == "blocker":
-        if args.blocker_command == "reply":
-            _print(runtime.respond_to_blocker(args.task_id, args.response), args.as_json)
-            return 0
+        print("blocker flow removed from direct codex runner", file=sys.stderr)
+        return 1
 
     if args.command == "route":
         _print(route_request(args.input, execute=args.execute), args.as_json)
@@ -303,13 +307,8 @@ def main() -> int:
             _print(request_approval(args.kind, payload, args.risk_level), args.as_json)
             return 0
         if args.approvals_command == "resolve":
-            try:
-                runtime = PersonalAgentRuntime()
-            except RuntimeError as exc:
-                print(f"runtime init failed: {exc}", file=sys.stderr)
-                return 1
-            _print(runtime.resolve_approval(args.approval_id, args.status, args.note), args.as_json)
-            return 0
+            print("runtime approval-resume flow removed from direct codex runner", file=sys.stderr)
+            return 1
 
     if args.command == "tasks":
         if args.tasks_command == "add":
