@@ -22,8 +22,24 @@ class FakeMemoryService:
 
     def ingest(self, payload: dict) -> dict:
         record = dict(payload)
-        self.records.append(record)
+        now = datetime.now(timezone.utc).isoformat()
+        record.setdefault("created_at", now)
+        record.setdefault("updated_at", now)
+        record.setdefault("observed_at", now)
+        record.setdefault("metadata", {})
+        for index, existing in enumerate(self.records):
+            if existing.get("id") == record.get("id"):
+                self.records[index] = record
+                break
+        else:
+            self.records.append(record)
         return record
+
+    def get_memory(self, memory_id: str) -> dict:
+        for record in self.records:
+            if record.get("id") == memory_id:
+                return dict(record)
+        raise KeyError(memory_id)
 
     def search(self, query: str, scopes: list[str] | None = None, limit: int = 10) -> dict:
         scopes = scopes or []
@@ -365,6 +381,10 @@ class PersonalAgentTests(unittest.TestCase):
         shared_memory.SHARED_MEMORY_DB_PATH = config.SHARED_MEMORY_DB_PATH
 
         self.fake_operational_memory = FakeOperationalMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
+        self.shared_memory_service_patcher = patch(
+            "personal_agent.shared_memory.get_memory_service", return_value=self.fake_operational_memory
+        )
+        self.shared_memory_service_patcher.start()
         self.runtime_memory_patcher = patch("personal_agent.runtime.get_memory_service", return_value=self.fake_operational_memory)
         self.runtime_memory_patcher.start()
 
@@ -372,6 +392,7 @@ class PersonalAgentTests(unittest.TestCase):
         from personal_agent import config
         from personal_agent import shared_memory
 
+        self.shared_memory_service_patcher.stop()
         self.runtime_memory_patcher.stop()
         config.SHARED_MEMORY_ROOT = self._original_config["SHARED_MEMORY_ROOT"]
         config.SHARED_MEMORY_SRC_DIR = self._original_config["SHARED_MEMORY_SRC_DIR"]
