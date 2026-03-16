@@ -628,10 +628,26 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         return "".join(chunks)
 
     def _render_inline_markdown(self, value: str) -> str:
+        value = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", self._render_markdown_link, value)
         value = re.sub(r"`([^`]+)`", r"<code>\1</code>", value)
         value = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", value)
         value = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", value)
         return value
+
+    def _render_markdown_link(self, match: re.Match[str]) -> str:
+        label = self._render_inline_markdown(match.group(1))
+        href = self._sanitize_href(match.group(2))
+        if not href:
+            return match.group(0)
+        return f'<a href="{href}" target="_blank" rel="noreferrer">{label}</a>'
+
+    def _sanitize_href(self, href: str) -> str:
+        parsed = urlparse(href)
+        if parsed.scheme in {"http", "https", "mailto"}:
+            return href
+        if href.startswith(("/", "./", "../", "#")):
+            return href
+        return ""
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8082, interval_seconds: float = 5.0) -> None:
