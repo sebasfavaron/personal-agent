@@ -1642,6 +1642,34 @@ class PersonalAgentTests(unittest.TestCase):
         status_code, _ = invoke("do_GET", "/missing")
         self.assertEqual(status_code, 404)
 
+    def test_daemon_renders_markdown_links_in_artifacts(self) -> None:
+        from personal_agent.daemon import PersonalAgentHandler
+
+        handler = PersonalAgentHandler.__new__(PersonalAgentHandler)
+        rendered = handler._render_markdown(
+            "Abrir [USECASE.md](http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89) y `code`."
+        )
+        self.assertIn(
+            '<a href="http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89" target="_blank" rel="noreferrer">USECASE.md</a>',
+            rendered,
+        )
+        self.assertIn("<code>code</code>", rendered)
+
+        page = handler._artifact_page(
+            {
+                "id": "art-1",
+                "task_id": "task-1",
+                "artifact_type": "report",
+                "title": "Rendered artifact",
+                "content": '[safe](javascript:alert(1)) [ok](http://127.0.0.1:8082/artifacts/art-1)',
+            }
+        )
+        self.assertIn("[safe](javascript:alert(1))", page)
+        self.assertIn(
+            '<a href="http://127.0.0.1:8082/artifacts/art-1" target="_blank" rel="noreferrer">ok</a>',
+            page,
+        )
+
     def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
         from personal_agent.runtime import CODEX_ADD_DIRS, PERSONAL_AGENT_ID, PersonalAgentRuntime
 
