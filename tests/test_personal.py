@@ -1234,7 +1234,11 @@ class PersonalAgentTests(unittest.TestCase):
         with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
             runtime.process_once()
 
-        codex_commands = [command for command in seen if command[:2] == ["codex", "exec"]]
+        codex_commands = [
+            command
+            for command in seen
+            if len(command) >= 2 and Path(command[0]).name == "codex" and command[1] == "exec"
+        ]
         self.assertTrue(codex_commands)
         self.assertNotIn("--ask-for-approval", codex_commands[0])
         self.assertNotIn("--search", codex_commands[0])
