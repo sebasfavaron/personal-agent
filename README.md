@@ -20,11 +20,9 @@ See [INSTALL.md](INSTALL.md) for setup.
 
 - daemon + dashboard at `127.0.0.1:8082`
 - shared-memory orchestration over `agents-database`
-- Codex-backed intake planner with heuristic fallback
-- event worker using `codex exec` for structured task decisions, blockers, and approval requests
-- approval resolution with automatic task resume
-- dashboard/CLI snapshot with next actions, latest run state, and pending approvals
-- specialist handoff contract for sibling subagents
+- direct Codex task runner with `draft -> confirm cwd -> launch -> result`
+- one `codex exec` process per task, launched from the selected repo root
+- dashboard/CLI snapshot with drafts, active runs, failed runs, and recent results
 
 System map and machine-recreation guide:
 
@@ -67,7 +65,7 @@ These can be overridden with:
 
 ## What Is Still A Promise
 
-These are goals for future work. They are not implemented in this repo yet.
+These are goals for future work. They are not implemented in the main runner path yet.
 
 - browser automation and live web execution
 - email sending or contact workflows
@@ -81,9 +79,8 @@ These are goals for future work. They are not implemented in this repo yet.
 
 - start here for general requests
 - personal context stays here
-- Ballbox or company-shaped requests can be delegated to `~/ballbox-company-agent`
-- code-shaped requests can be delegated to `~/ai-dev-workflow`
-- company requests that also imply repo work can cascade `personal -> company -> code`
+- code-shaped requests default to `~/ai-dev-workflow` unless the draft cwd is changed before launch
+- the main daemon path is now a direct code runner, not a multi-agent orchestrator
 
 ## Layout
 

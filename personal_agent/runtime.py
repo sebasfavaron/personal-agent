@@ -1,36 +1,37 @@
 from __future__ import annotations
 
-import json
 import re
 import subprocess
-import tempfile
 import threading
-from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import CODEX_ADD_DIRS, CODEX_BIN
-from .planner import build_intake_plan
-from .repo_targets import default_code_repo, repo_catalog, repo_target_by_id
+from .config import BASE_DIR, CODEX_ADD_DIRS, CODEX_BIN
+from .repo_targets import default_code_repo, infer_target_repo, repo_catalog, repo_target_by_id
 from .shared_memory import get_memory_service
 
 
 PERSONAL_AGENT_ID = "personal-agent"
 PERSONAL_PROJECT_ID = "proj_personal_agent"
-SYSTEM_REPO_ID = "repo_personal_agent"
-PERSONAL_ROOT = Path(__file__).resolve().parent.parent
-BALLBOX_COMPANY_ROOT = PERSONAL_ROOT.parent / "ballbox-company-agent"
-NON_TERMINAL_HANDOFF_STATUSES = {"pending", "accepted", "in_progress"}
+RUNS_DIR = BASE_DIR / "data" / "runs"
 
 
 @dataclass(slots=True)
 class IntakeResult:
     task: dict[str, Any]
-    subtasks: list[dict[str, Any]]
-    artifacts: list[dict[str, Any]]
-    handoff: dict[str, Any] | None
     memory_context: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class ProcessState:
+    run_id: str
+    task_id: str
+    process: subprocess.Popen[str]
+    stdout_path: Path
+    stderr_path: Path
+    output_path: Path
+    command: list[str]
 
 
 class PersonalAgentRuntime:
@@ -39,805 +40,125 @@ class PersonalAgentRuntime:
         if service is None:
             raise RuntimeError("shared memory service unavailable")
         self.service = service
+        self._processes: dict[str, ProcessState] = {}
+        self._process_lock = threading.Lock()
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_entities()
-        self._stop = threading.Event()
         self._recover_interrupted_runs()
-        self._reconcile_nonterminal_handoffs()
 
     def _ensure_entities(self) -> None:
-        self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Front door and orchestration runtime")
+        self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Direct Codex runner")
         for repo in repo_catalog().values():
             self.service.create_repo(str(repo["id"]), str(repo["name"]), project_id=PERSONAL_PROJECT_ID, path=str(repo["path"]))
 
     def intake(self, text: str, origin: str = "human") -> IntakeResult:
         memory_context = self.service.search(text, scopes=["global", "project", "repo", "agent"], limit=5)["results"]
-        plan = build_intake_plan(text, memory_context)
-        route = {
-            "primary_agent": plan["primary_agent"],
-            "secondary_agent": plan["secondary_agent"],
-            "reason": plan["reason"],
-            "delegation_target": plan["delegation_target"],
-            "target_repo_id": plan.get("target_repo_id"),
-            "target_repo_name": plan.get("target_repo_name"),
-            "target_repo_path": plan.get("target_repo_path"),
-            "planning_source": plan["planning_source"],
-            "codex_instruction": plan["codex_instruction"],
-        }
-        target_repo_id = route.get("target_repo_id") or SYSTEM_REPO_ID
+        target_repo = infer_target_repo(text, primary_agent="code") or default_code_repo()
+        suggested_cwd = str(target_repo["path"])
+        prompt_preview = self._build_prompt(text, suggested_cwd, memory_context)
         task = self.service.create_task(
             title=self._task_title(text),
             intent=text,
             kind="task",
-            status="open",
+            status="draft",
             project_id=PERSONAL_PROJECT_ID,
-            repo_id=target_repo_id,
+            repo_id=str(target_repo["id"]),
             origin=origin,
             owner_agent=PERSONAL_AGENT_ID,
-            metadata={"route": route, "stage": "intake"},
+            metadata={
+                "execution": {
+                    "suggested_repo_id": target_repo["id"],
+                    "suggested_repo_name": target_repo["name"],
+                    "suggested_cwd": suggested_cwd,
+                    "cwd": suggested_cwd,
+                    "permission_mode": "danger-full-access",
+                    "prompt_preview": prompt_preview,
+                }
+            },
         )
-        subtasks = [
-            self.service.create_task(
-                title=subtask["title"],
-                intent=subtask["detail"],
-                kind="subtask",
-                status="open",
-                priority=index + 1,
-                project_id=PERSONAL_PROJECT_ID,
-                repo_id=target_repo_id,
-                parent_task_id=task["id"],
-                origin=origin,
-                owner_agent=PERSONAL_AGENT_ID,
-                metadata={"route": route, "stage": "subtask"},
-            )
-            for index, subtask in enumerate(plan["subtasks"])
-        ]
-        artifacts = [
-            self.service.create_artifact(
-                task_id=task["id"],
-                artifact_type="normalized_intent",
-                title="Normalized Intent",
-                content=self._normalized_intent(text, route, memory_context),
-                source_ref=PERSONAL_AGENT_ID,
-                metadata={"route": route, "classification": "system"},
-            ),
-            self.service.create_artifact(
-                task_id=task["id"],
-                artifact_type="plan",
-                title="Execution Plan",
-                content=self._plan_artifact(text, route, subtasks),
-                source_ref=PERSONAL_AGENT_ID,
-                metadata={"route": route, "classification": "intermediate"},
-            ),
-        ]
-        handoff = None
-        if route["delegation_target"] is not None:
-            handoff = self.service.create_handoff(
-                task_id=task["id"],
-                from_agent=PERSONAL_AGENT_ID,
-                to_agent=route["delegation_target"],
-                reason=route["reason"],
-                payload={
-                    "task_id": task["id"],
-                    "intent": text,
-                    "route": route,
-                    "expected_artifacts": ["report"],
-                    "idempotency_key": task["id"],
-                },
-            )
-            self.service.update_task(task["id"], status="in_progress", metadata={"route": route, "stage": "delegated"})
-        return IntakeResult(task=task, subtasks=subtasks, artifacts=artifacts, handoff=handoff, memory_context=memory_context)
+        return IntakeResult(task=task, memory_context=memory_context)
 
-    def dashboard_snapshot(self) -> dict[str, Any]:
-        snapshot = self.service.dashboard_snapshot(owner_agent=PERSONAL_AGENT_ID)
-        accepted_handoffs = self.service.list_handoffs(status="accepted", limit=20)
-        snapshot["pending_handoffs"] = snapshot.get("pending_handoffs", []) + [
-            handoff for handoff in accepted_handoffs if handoff["to_agent"] == "ballbox-company-agent"
-        ]
-        snapshot["active_tasks"] = [task for task in snapshot.get("active_tasks", []) if task.get("parent_task_id") is None]
-        snapshot["blocked_tasks"] = [task for task in snapshot.get("blocked_tasks", []) if task.get("parent_task_id") is None]
-        task_ids = [task["id"] for key in ("active_tasks", "blocked_tasks") for task in snapshot.get(key, [])]
-        latest_runs = {
-            task_id: runs[0] if runs else None for task_id in task_ids for runs in [self.service.list_task_runs(task_id=task_id, limit=1)]
-        }
-        pending_approvals = self.service.list_approvals(status="pending", limit=100)
-        approvals_by_task = {approval["task_id"]: approval for approval in pending_approvals}
-        task_counts: dict[str, int] = {}
-        for subtask in self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=200):
-            parent_id = subtask.get("parent_task_id")
-            if parent_id and subtask.get("status") != "completed":
-                task_counts[parent_id] = task_counts.get(parent_id, 0) + 1
-        for key in ("active_tasks", "blocked_tasks"):
-            snapshot[key] = [
-                self._decorate_task_snapshot(
-                    task,
-                    latest_run=latest_runs.get(task["id"]),
-                    pending_approval=approvals_by_task.get(task["id"]),
-                    open_subtask_count=task_counts.get(task["id"], 0),
-                )
-                for task in snapshot.get(key, [])
-            ]
-        snapshot["active_tasks"].sort(key=self._task_sort_key)
-        snapshot["blocked_tasks"].sort(key=self._task_sort_key)
-        snapshot["summary"] = {
-            "active_task_count": len(snapshot.get("active_tasks", [])),
-            "blocked_task_count": len(snapshot.get("blocked_tasks", [])),
-            "pending_approval_count": len(snapshot.get("pending_approvals", [])),
-            "pending_handoff_count": len(snapshot.get("pending_handoffs", [])),
-            "running_task_count": sum(1 for task in snapshot.get("active_tasks", []) if task["execution_state"] == "running"),
-            "started_task_count": sum(1 for task in snapshot.get("active_tasks", []) if task["has_started"]),
-            "queued_task_count": sum(1 for task in snapshot.get("active_tasks", []) if not task["has_started"]),
-        }
-        snapshot["current_run"] = self._current_run_snapshot(snapshot)
-        snapshot["recent_deliverables"] = self._recent_deliverables(limit=8)
-        snapshot["memory_context"] = self.service.context_for(
-            project=PERSONAL_PROJECT_ID, repo=SYSTEM_REPO_ID, agent=PERSONAL_AGENT_ID, task="personal front door"
-        )
-        return snapshot
+    def start_task(self, task_id: str, cwd: str, prompt_override: str | None = None) -> dict[str, Any]:
+        task = self.service.get_task(task_id)
+        if task.get("status") != "draft":
+            raise ValueError(f"Task {task_id} is not in draft state")
+        final_cwd = Path(cwd).expanduser().resolve()
+        if not final_cwd.exists() or not final_cwd.is_dir():
+            raise ValueError(f"Invalid cwd: {cwd}")
 
-    def task_bundle(self, task_id: str) -> dict[str, Any]:
-        bundle = self.service.task_bundle(task_id)
-        task = bundle["task"]
-        latest_run = bundle["runs"][0] if bundle["runs"] else None
-        pending_approval = next((item for item in bundle["approvals"] if item["status"] == "pending"), None)
-        unresolved_children = [item for item in bundle["children"] if item.get("status") != "completed"]
-        bundle["task"] = self._decorate_task_snapshot(
-            task,
-            latest_run=latest_run,
-            pending_approval=pending_approval,
-            open_subtask_count=len(unresolved_children),
-        )
-        return bundle
-
-    def respond_to_blocker(self, task_id: str, response: str) -> dict[str, Any]:
-        artifact = self.service.create_artifact(
-            task_id=task_id,
-            artifact_type="blocker_response",
-            title="Human blocker response",
-            content=response,
-            source_ref=PERSONAL_AGENT_ID,
-            metadata={"classification": "system"},
-        )
-        task = self.service.update_task(
+        prompt = (prompt_override or "").strip() or self._build_prompt(task["intent"], str(final_cwd))
+        run = self.service.start_task_run(
             task_id,
-            status="open",
-            blocked_reason=None,
-            requires_human_input=False,
-            metadata=self._merged_task_metadata(
-                self.service.get_task(task_id),
-                {"resolved_by": "human", "response_artifact_id": artifact["id"]},
-            ),
+            PERSONAL_AGENT_ID,
+            input_payload={"cwd": str(final_cwd), "permission_mode": "danger-full-access"},
+            metadata={"cwd": str(final_cwd), "permission_mode": "danger-full-access"},
         )
-        return {"task": task, "artifact": artifact}
-
-    def resolve_approval(self, approval_id: str, status: str, resolution_note: str = "") -> dict[str, Any]:
-        normalized = status.strip().lower()
-        if normalized not in {"approved", "rejected"}:
-            raise ValueError(f"Unsupported approval status: {status}")
-        approval = self.service.resolve_approval(approval_id, status=normalized, resolution_note=resolution_note or None)
-        artifact = self.service.create_artifact(
-            task_id=approval["task_id"],
-            artifact_type="approval_resolution",
-            title=f"Approval {normalized}",
-            content=resolution_note.strip() or f"Approval {normalized}.",
-            source_ref=PERSONAL_AGENT_ID,
-            metadata={"approval_id": approval_id, "status": normalized, "classification": "system"},
-        )
-        task_metadata = {
-            "approval_id": approval_id,
-            "approval_resolution_artifact_id": artifact["id"],
-            "approval_status": normalized,
-        }
-        if normalized == "rejected":
-            task = self.service.update_task(
-                approval["task_id"],
-                status="blocked",
-                blocked_reason=resolution_note.strip() or "Approval rejected",
-                requires_human_input=False,
-                metadata=self._merged_task_metadata(self.service.get_task(approval["task_id"]), task_metadata),
-            )
-            return {"approval": approval, "artifact": artifact, "task": task, "resume": None}
-        task = self.service.update_task(
-            approval["task_id"],
-            status="open",
-            blocked_reason=None,
-            requires_human_input=False,
-            metadata=self._merged_task_metadata(self.service.get_task(approval["task_id"]), task_metadata),
-        )
-        resume = self._run_task_with_codex(task)
-        return {"approval": approval, "artifact": artifact, "task": self.service.get_task(task["id"]), "resume": resume}
-
-    def process_once(self) -> dict[str, Any]:
-        self._recover_interrupted_runs()
-        self._reconcile_nonterminal_handoffs()
-        processed: list[dict[str, Any]] = []
-        for handoff in self.service.list_handoffs(status="pending", limit=20):
-            processed.append(self._dispatch_handoff(handoff))
-        for task in self.service.list_tasks(status="open", owner_agent=PERSONAL_AGENT_ID, requires_human_input=False, limit=20):
-            if task["parent_task_id"] is not None:
-                continue
-            route = task["metadata"].get("route", {})
-            if route.get("primary_agent") == "company":
-                continue
-            processed.append(self._run_task_with_codex(task))
-        return {"processed": processed}
-
-    def serve_forever(self, interval_seconds: float = 5.0) -> None:
-        while not self._stop.is_set():
-            self.process_once()
-            self._stop.wait(interval_seconds)
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    def resolve_preference_blocker(self, task_id: str, query: str, reason: str) -> dict[str, Any]:
-        results = self.service.search(query, scopes=["global", "project", "repo"], limit=3)["results"]
-        if not results:
-            return self.service.update_task(
-                task_id,
-                status="blocked",
-                blocked_reason=reason,
-                requires_human_input=True,
-                metadata={"blocker_query": query},
-            )
-        chosen = results[0]["memory"]
-        self.service.create_artifact(
-            task_id=task_id,
-            artifact_type="memory_resolution",
-            title="Resolved from memory",
-            content=f"Resolved blocker using memory {chosen['id']}: {chosen['summary']}",
-            source_ref=PERSONAL_AGENT_ID,
-            metadata={"memory_id": chosen["id"], "classification": "system"},
-        )
-        return self.service.update_task(
-            task_id,
-            status="open",
-            blocked_reason=None,
-            requires_human_input=False,
-            metadata=self._merged_task_metadata(self.service.get_task(task_id), {"resolved_by_memory_id": chosen["id"]}),
-        )
-
-    def _dispatch_handoff(self, handoff: dict[str, Any]) -> dict[str, Any]:
-        payload = handoff["payload"]
-        if handoff["to_agent"] == "ai-dev-workflow":
-            parsed = {
-                "status": "failed",
-                "summary": "Deprecated durable ai-dev-workflow handoff. Run code work as an in-process Codex subagent instead.",
-            }
-            status = parsed["status"]
-            is_terminal = True
-            self._set_handoff_status(
-                handoff["id"],
-                status=status,
-                result_summary=parsed.get("summary"),
-                terminal=is_terminal,
-            )
-            self.service.create_artifact(
-                task_id=handoff["task_id"],
-                artifact_type="handoff_result",
-                title=f"Handoff result from {handoff['to_agent']}",
-                content=json.dumps(parsed, indent=2, sort_keys=True),
-                fmt="json",
-                source_ref=handoff["to_agent"],
-                metadata={"handoff_id": handoff["id"], "classification": "system"},
-            )
-            task = self.service.get_task(handoff["task_id"])
-            self.service.update_task(
-                task["id"],
-                status="blocked",
-                blocked_reason=parsed["summary"],
-                requires_human_input=True,
-                metadata=self._merged_task_metadata(
-                    task,
-                    {
-                        "awaiting_handoff_result": False,
-                        "awaiting_handoff_id": handoff["id"],
-                        "handoff_status": status,
-                    },
-                ),
-            )
-            return {"kind": "handoff", "handoff_id": handoff["id"], "status": status}
-        elif handoff["to_agent"] == "ballbox-company-agent":
-            command = [
-                "python3",
-                str(BALLBOX_COMPANY_ROOT / "scripts" / "ballbox_company_agent.py"),
-                "run-task",
-                "--task-id",
-                payload["task_id"],
-                "--origin",
-                PERSONAL_AGENT_ID,
-                "--reason",
-                handoff["reason"],
-                "--payload-json",
-                json.dumps(payload),
-            ]
-        else:
-            raise ValueError(f"Unknown handoff target: {handoff['to_agent']}")
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        parsed = json.loads(result.stdout)
-        status = parsed.get("status", "accepted")
-        is_terminal = status in {"completed", "blocked", "failed"}
-        self._set_handoff_status(
-            handoff["id"],
-            status=status,
-            result_summary=parsed.get("summary"),
-            terminal=is_terminal,
-        )
-        self.service.create_artifact(
-            task_id=handoff["task_id"],
-            artifact_type="handoff_result",
-            title=f"Handoff result from {handoff['to_agent']}",
-            content=result.stdout.strip(),
-            fmt="json",
-            source_ref=handoff["to_agent"],
-            metadata={"handoff_id": handoff["id"], "classification": "system"},
-        )
-        task = self.service.get_task(handoff["task_id"])
-        if status == "accepted":
-            self.service.update_task(
-                task["id"],
-                status="in_progress",
-                blocked_reason=None,
-                requires_human_input=False,
-                metadata=self._merged_task_metadata(
-                    task,
-                    {
-                        "awaiting_handoff_result": True,
-                        "awaiting_handoff_id": handoff["id"],
-                        "awaiting_handoff_agent": handoff["to_agent"],
-                        "handoff_status": status,
-                    },
-                ),
-            )
-        elif status == "completed":
-            self._complete_task_after_handoff(task, handoff, parsed.get("summary"))
-        elif status in {"blocked", "failed"}:
-            self.service.update_task(
-                task["id"],
-                status="blocked",
-                blocked_reason=parsed.get("summary") or f"Handoff {status}",
-                requires_human_input=(status == "blocked"),
-                metadata=self._merged_task_metadata(
-                    task,
-                    {
-                        "awaiting_handoff_result": False,
-                        "awaiting_handoff_id": handoff["id"],
-                        "handoff_status": status,
-                    },
-                ),
-            )
-        return {"kind": "handoff", "handoff_id": handoff["id"], "status": status}
-
-    def _run_task_with_codex(self, task: dict[str, Any]) -> dict[str, Any]:
-        route = task.get("metadata", {}).get("route", {})
-        mode = "code-subagent" if route.get("primary_agent") == "code" else "codex-agentic"
-        run = self.service.start_task_run(task["id"], PERSONAL_AGENT_ID, input_payload={"mode": mode})
-        with tempfile.NamedTemporaryFile(prefix="personal-agent-task-", suffix=".json", delete=False) as handle:
-            output_path = Path(handle.name)
-        prompt = self._task_execution_prompt(task)
-        repo_root = PERSONAL_ROOT
-        if route.get("primary_agent") == "code":
-            target_repo = repo_target_by_id(route.get("target_repo_id")) or default_code_repo()
-            repo_root = Path(str(target_repo["path"]))
-        sandbox_mode = "workspace-write" if route.get("primary_agent") == "code" else "read-only"
+        stdout_path = RUNS_DIR / f"{run['id']}.stdout.log"
+        stderr_path = RUNS_DIR / f"{run['id']}.stderr.log"
+        output_path = RUNS_DIR / f"{run['id']}.md"
+        stdout_handle = stdout_path.open("w", encoding="utf-8")
+        stderr_handle = stderr_path.open("w", encoding="utf-8")
         command = [
             CODEX_BIN,
             "exec",
             "--sandbox",
-            sandbox_mode,
+            "danger-full-access",
             "-C",
-            str(repo_root),
+            str(final_cwd),
             "-o",
             str(output_path),
         ]
         for writable_dir in CODEX_ADD_DIRS:
             command.extend(["--add-dir", str(writable_dir)])
         command.append(prompt)
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, check=True)
-            raw_output = output_path.read_text(encoding="utf-8").strip() or result.stdout.strip()
-            decision = self._parse_task_decision(raw_output)
-            return self._apply_task_decision(task, run, decision)
-        except (ValueError, json.JSONDecodeError) as exc:
-            self.service.finish_task_run(run["id"], status="failed", error_message=str(exc))
-            self.service.update_task(
-                task["id"],
-                status="blocked",
-                blocked_reason=str(exc),
-                requires_human_input=True,
-                metadata=self._merged_task_metadata(task, {"task_run_id": run["id"]}),
-            )
-            return {"kind": "task", "task_id": task["id"], "status": "blocked"}
-        except subprocess.CalledProcessError as exc:
-            self.service.finish_task_run(run["id"], status="failed", error_message=exc.stderr.strip() or exc.stdout.strip())
-            self.service.update_task(
-                task["id"],
-                status="blocked",
-                blocked_reason=exc.stderr.strip() or "codex execution failed",
-                requires_human_input=True,
-                metadata=self._merged_task_metadata(task, {"task_run_id": run["id"]}),
-            )
-            return {"kind": "task", "task_id": task["id"], "status": "blocked"}
-        finally:
-            output_path.unlink(missing_ok=True)
-
-    def _task_execution_prompt(self, task: dict[str, Any]) -> str:
-        route = task.get("metadata", {}).get("route", {})
-        subtasks = self.service.list_tasks(status="open", owner_agent=PERSONAL_AGENT_ID, limit=100)
-        child_subtasks = [item for item in subtasks if item.get("parent_task_id") == task["id"]]
-        prior_artifacts = self.service.list_artifacts(task_id=task["id"], limit=20)
-        subtask_lines = [f"- {item['title']}: {item['intent']}" for item in child_subtasks[:6]] or ["- none"]
-        artifact_lines = [f"- {item['artifact_type']}: {item['title']}" for item in prior_artifacts[:8]] or ["- none"]
-        target_repo = repo_target_by_id(route.get("target_repo_id")) or default_code_repo()
-        if route.get("primary_agent") == "code":
-            return "\n".join(
-                [
-                    f"You are a clean Codex subagent running inside the {target_repo['name']} repository.",
-                    "Treat this as a concrete code task, not as orchestration.",
-                    "Start from the current repository context and its local skills.",
-                    "Keep focus narrow; ignore unrelated parent-task context unless it is explicitly included below.",
-                    "Return JSON only with this exact shape:",
-                    "{",
-                    '  "outcome": "complete|blocked|needs_approval",',
-                    '  "summary": "short summary",',
-                    '  "report_title": "short title",',
-                    '  "report_markdown": "markdown report",',
-                    '  "blocker_reason": "required when outcome is blocked",',
-                    '  "approval": {',
-                    '    "kind": "required when outcome is needs_approval",',
-                    '    "risk_level": "low|medium|high",',
-                    '    "payload": {"summary": "what needs approval"}',
-                    "  },",
-                    '  "actions": [',
-                    '    {',
-                    '      "type": "create_followup_task|record_artifact",',
-                    '      "title": "short title",',
-                    '      "intent": "required for create_followup_task",',
-                    '      "priority": 0,',
-                    '      "artifact_type": "note",',
-                    '      "content": "required for record_artifact",',
-                    '      "payload": {}',
-                    "    }",
-                    "  ]",
-                    "}",
-                    "Rules:",
-                    "- Implement directly when safe and possible in this repo.",
-                    "- Use complete only when the requested code work or a safe concrete slice is actually done.",
-                    "- Use blocked when missing context prevents safe progress.",
-                    "- Use needs_approval for side effects or irreversible actions.",
-                    "- Do not create handoffs for code work; you already are the code subagent in the target repo.",
-                    "- create_followup_task is for durable leftover work only.",
-                    "- record_artifact is for notes worth preserving.",
-                    "- Always include report_markdown with findings, changes, verification, and next actions.",
-                    "",
-                    f"Task title: {task['title']}",
-                    f"Task intent: {task['intent']}",
-                    f"Reason: {route.get('reason', 'n/a')}",
-                    f"Target repo: {target_repo['name']} ({target_repo['path']})",
-                    "Open subtasks:",
-                    *subtask_lines,
-                    "Existing artifacts:",
-                    *artifact_lines,
-                ]
-            )
-        return "\n".join(
-            [
-                "You are the acting executor for a personal-agent task.",
-                "Do not perform external side effects directly.",
-                "Python will enforce persistence, approvals, blocking, and audit logs.",
-                "Return JSON only with this exact shape:",
-                "{",
-                '  "outcome": "complete|blocked|needs_approval",',
-                '  "summary": "short summary",',
-                '  "report_title": "short title",',
-                '  "report_markdown": "markdown report",',
-                '  "blocker_reason": "required when outcome is blocked",',
-                '  "approval": {',
-                '    "kind": "required when outcome is needs_approval",',
-                '    "risk_level": "low|medium|high",',
-                '    "payload": {"summary": "what needs approval"}',
-                "  },",
-                '  "actions": [',
-                '    {',
-                '      "type": "create_followup_task|create_handoff|record_artifact",',
-                '      "title": "short title",',
-                '      "intent": "required for create_followup_task",',
-                '      "priority": 0,',
-                '      "to_agent": "ballbox-company-agent",',
-                '      "reason": "required for create_handoff",',
-                '      "artifact_type": "note",',
-                '      "content": "required for record_artifact",',
-                '      "payload": {}',
-                "    }",
-                "  ]",
-                "}",
-                "Rules:",
-                "- Use complete when the task can be closed with a report.",
-                "- Use blocked when more context is required before safe progress.",
-                "- Use needs_approval when the next meaningful step has external side effects or irreversible risk.",
-                "- Use actions when Python should queue durable operational steps before the terminal outcome.",
-                "- create_handoff is only for ballbox-company-agent; code work should run directly in this Codex execution.",
-                "- create_followup_task is for durable next steps that should survive this run.",
-                "- record_artifact is for structured notes worth preserving in shared memory.",
-                "- Always include report_markdown with findings, risks, and recommended next actions.",
-                "",
-                f"Task title: {task['title']}",
-                f"Task intent: {task['intent']}",
-                f"Route: {route.get('primary_agent', 'personal')}",
-                f"Reason: {route.get('reason', 'n/a')}",
-                (
-                    f"Execution mode: code subagent in {target_repo['name']}; inspect and implement directly when needed."
-                    if route.get("primary_agent") == "code"
-                    else "Execution mode: personal-agent read-only analysis."
-                ),
-                "Open subtasks:",
-                *subtask_lines,
-                "Existing artifacts:",
-                *artifact_lines,
-            ]
+        process = subprocess.Popen(command, stdout=stdout_handle, stderr=stderr_handle, text=True)
+        state = ProcessState(
+            run_id=run["id"],
+            task_id=task_id,
+            process=process,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            output_path=output_path,
+            command=command,
         )
-
-    def _parse_task_decision(self, raw_output: str) -> dict[str, Any]:
-        cleaned = raw_output.strip()
-        if cleaned.startswith("```"):
-            match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", cleaned, flags=re.DOTALL)
-            if match:
-                cleaned = match.group(1)
-        if not cleaned.startswith("{"):
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                raise ValueError("No JSON object found in task output")
-            cleaned = cleaned[start : end + 1]
-        payload = json.loads(cleaned)
-        if not isinstance(payload, dict):
-            raise ValueError("Task output must be a JSON object")
-        return payload
-
-    def _apply_task_decision(self, task: dict[str, Any], run: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
-        outcome = decision.get("outcome")
-        if outcome not in {"complete", "blocked", "needs_approval"}:
-            raise ValueError(f"Unsupported outcome: {outcome}")
-        report = str(decision.get("report_markdown") or "").strip()
-        if not report:
-            raise ValueError("Task decision missing report_markdown")
-        summary = str(decision.get("summary") or "").strip() or "Codex task decision"
-        title = str(decision.get("report_title") or "Worker report").strip()
-        action_results = self._apply_actions(task, run, decision.get("actions"))
-        handoff_actions = [item for item in action_results if item.get("type") == "create_handoff"]
-        artifact = self.service.create_artifact(
-            task_id=task["id"],
-            artifact_type="report" if outcome == "complete" else "decision",
-            title=title,
-            content=report,
-            source_ref=PERSONAL_AGENT_ID,
-            metadata={
-                "task_run_id": run["id"],
-                "outcome": outcome,
-                "classification": "deliverable" if outcome == "complete" and not handoff_actions else "intermediate",
-            },
-        )
-        self.service.create_artifact(
-            task_id=task["id"],
-            artifact_type="execution_state",
-            title="Execution state snapshot",
-            content=json.dumps(
-                {
-                    "run_id": run["id"],
-                    "outcome": outcome,
-                    "summary": summary,
-                    "action_results": action_results,
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            fmt="json",
-            source_ref=PERSONAL_AGENT_ID,
-            metadata={"task_run_id": run["id"], "outcome": outcome, "classification": "system"},
-        )
-        if outcome == "complete":
-            self.service.finish_task_run(run["id"], status="completed", result_summary=summary)
-            if handoff_actions:
-                self.service.update_task(
-                    task["id"],
-                    status="in_progress",
-                    blocked_reason=None,
-                    requires_human_input=False,
-                    metadata=self._merged_task_metadata(
-                        task,
-                        {
-                            "report_artifact_id": artifact["id"],
-                            "task_run_id": run["id"],
-                            "action_results": action_results,
-                            "awaiting_handoff_result": True,
-                            "awaiting_handoff_ids": [item["handoff_id"] for item in handoff_actions],
-                            "awaiting_handoff_agent": handoff_actions[0]["to_agent"],
-                        },
-                    ),
-                )
-                return {"kind": "task", "task_id": task["id"], "status": "in_progress", "actions": action_results}
-            self._absorb_open_subtasks(task["id"], run["id"])
-            self.service.update_task(
-                task["id"],
-                status="completed",
-                metadata=self._merged_task_metadata(
-                    task,
-                    {"report_artifact_id": artifact["id"], "task_run_id": run["id"], "action_results": action_results},
-                ),
-            )
-            self.service.ingest(
-                {
-                    "type": "episode",
-                    "scope": "agent",
-                    "project_id": PERSONAL_PROJECT_ID,
-                    "repo_id": SYSTEM_REPO_ID,
-                    "title": f"Task completed: {task['title']}",
-                    "content": report,
-                    "summary": report[:180],
-                    "source_ref": PERSONAL_AGENT_ID,
-                    "evidence_ref": artifact["id"],
-                    "embedding": self.service._text_embedding(report),
-                    "metadata": {"task_id": task["id"], "task_run_id": run["id"]},
-                }
-            )
-            return {"kind": "task", "task_id": task["id"], "status": "completed", "actions": action_results}
-        if outcome == "blocked":
-            blocker_reason = str(decision.get("blocker_reason") or summary).strip()
-            self.service.finish_task_run(run["id"], status="blocked", result_summary=summary)
-            self.service.update_task(
-                task["id"],
-                status="blocked",
-                blocked_reason=blocker_reason,
-                requires_human_input=True,
-                metadata=self._merged_task_metadata(
-                    task,
-                    {"task_run_id": run["id"], "decision_artifact_id": artifact["id"], "action_results": action_results},
-                ),
-            )
-            return {"kind": "task", "task_id": task["id"], "status": "blocked", "actions": action_results}
-        approval = decision.get("approval")
-        if not isinstance(approval, dict) or not approval.get("kind") or not isinstance(approval.get("payload"), dict):
-            raise ValueError("Approval decision missing approval payload")
-        approval_record = self.service.create_approval(
-            task_id=task["id"],
-            kind=str(approval["kind"]),
-            risk_level=str(approval.get("risk_level") or "high"),
-            payload=approval["payload"],
-        )
-        self.service.finish_task_run(run["id"], status="awaiting_approval", result_summary=summary)
+        with self._process_lock:
+            self._processes[run["id"]] = state
         self.service.update_task(
-            task["id"],
-            status="blocked",
-            blocked_reason="Awaiting approval",
-            requires_human_input=True,
+            task_id,
+            status="in_progress",
+            blocked_reason=None,
+            requires_human_input=False,
             metadata=self._merged_task_metadata(
                 task,
                 {
-                    "task_run_id": run["id"],
-                    "decision_artifact_id": artifact["id"],
-                    "approval_id": approval_record["id"],
-                    "action_results": action_results,
+                    "execution": {
+                        **dict(task.get("metadata", {}).get("execution") or {}),
+                        "cwd": str(final_cwd),
+                        "prompt_preview": prompt,
+                        "run_id": run["id"],
+                        "pid": process.pid,
+                        "command": command,
+                        "stdout_path": str(stdout_path),
+                        "stderr_path": str(stderr_path),
+                        "output_path": str(output_path),
+                        "permission_mode": "danger-full-access",
+                    }
                 },
             ),
         )
-        return {
-            "kind": "task",
-            "task_id": task["id"],
-            "status": "awaiting_approval",
-            "approval_id": approval_record["id"],
-            "actions": action_results,
+        watcher = threading.Thread(target=self._watch_run, args=(run["id"], stdout_handle, stderr_handle), daemon=True)
+        watcher.start()
+        return {"task": self.service.get_task(task_id), "run": self.service.get_task_run(run["id"])}
+
+    def dashboard_snapshot(self) -> dict[str, Any]:
+        tasks = self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=200)
+        top_level = [task for task in tasks if task.get("parent_task_id") is None]
+        latest_runs = {
+            task["id"]: (self.service.list_task_runs(task_id=task["id"], limit=1) or [None])[0] for task in top_level
         }
-
-    def _apply_actions(self, task: dict[str, Any], run: dict[str, Any], actions: Any) -> list[dict[str, Any]]:
-        if actions is None:
-            return []
-        if not isinstance(actions, list):
-            raise ValueError("Task decision actions must be a list")
-        results: list[dict[str, Any]] = []
-        for action in actions:
-            if not isinstance(action, dict):
-                raise ValueError("Each task action must be an object")
-            action_type = str(action.get("type") or "").strip()
-            if action_type == "create_followup_task":
-                title = str(action.get("title") or "").strip()
-                intent = str(action.get("intent") or "").strip()
-                if not title or not intent:
-                    raise ValueError("create_followup_task requires title and intent")
-                followup = self.service.create_task(
-                    title=title,
-                    intent=intent,
-                    kind="subtask",
-                    status="open",
-                    priority=int(action.get("priority") or 0),
-                    project_id=task.get("project_id") or PERSONAL_PROJECT_ID,
-                    repo_id=task.get("repo_id") or SYSTEM_REPO_ID,
-                    parent_task_id=task["id"],
-                    origin="runtime_action",
-                    owner_agent=PERSONAL_AGENT_ID,
-                    metadata={"created_by_run_id": run["id"]},
-                )
-                results.append({"type": action_type, "task_id": followup["id"]})
-                continue
-            if action_type == "create_handoff":
-                to_agent = str(action.get("to_agent") or "").strip()
-                reason = str(action.get("reason") or "").strip()
-                payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
-                if to_agent != "ballbox-company-agent" or not reason:
-                    raise ValueError("create_handoff requires supported to_agent and reason")
-                handoff = self.service.create_handoff(
-                    task_id=task["id"],
-                    from_agent=PERSONAL_AGENT_ID,
-                    to_agent=to_agent,
-                    reason=reason,
-                    payload={"task_id": task["id"], **payload},
-                    metadata={"created_by_run_id": run["id"]},
-                )
-                results.append({"type": action_type, "handoff_id": handoff["id"], "to_agent": to_agent})
-                continue
-            if action_type == "record_artifact":
-                title = str(action.get("title") or "").strip()
-                content = str(action.get("content") or "").strip()
-                artifact_type = str(action.get("artifact_type") or "note").strip()
-                if not title or not content:
-                    raise ValueError("record_artifact requires title and content")
-                created = self.service.create_artifact(
-                    task_id=task["id"],
-                    artifact_type=artifact_type,
-                    title=title,
-                    content=content,
-                    source_ref=PERSONAL_AGENT_ID,
-                    metadata={"created_by_run_id": run["id"], "classification": "intermediate"},
-                )
-                results.append({"type": action_type, "artifact_id": created["id"], "artifact_type": artifact_type})
-                continue
-            raise ValueError(f"Unsupported action type: {action_type}")
-        return results
-
-    def _task_title(self, text: str) -> str:
-        compact = " ".join(text.split())
-        return compact if len(compact) <= 100 else compact[:97] + "..."
-
-    def _decorate_task_snapshot(
-        self,
-        task: dict[str, Any],
-        *,
-        latest_run: dict[str, Any] | None,
-        pending_approval: dict[str, Any] | None,
-        open_subtask_count: int,
-    ) -> dict[str, Any]:
-        metadata = task.get("metadata", {})
-        route = metadata.get("route", {})
-        decorated = dict(task)
-        execution_state = self._execution_state_for_task(latest_run)
-        decorated["open_subtask_count"] = open_subtask_count
-        decorated["latest_run"] = latest_run
-        decorated["execution_state"] = execution_state
-        decorated["has_started"] = latest_run is not None
-        decorated["last_run_started_at"] = latest_run.get("started_at") if latest_run else None
-        decorated["pending_approval"] = pending_approval
-        decorated["next_action"] = self._next_action_for_task(task, latest_run, pending_approval)
-        decorated["route_summary"] = {
-            "primary_agent": route.get("primary_agent", "personal"),
-            "secondary_agent": route.get("secondary_agent"),
-            "planning_source": route.get("planning_source"),
-        }
-        return decorated
-
-    def _execution_state_for_task(self, latest_run: dict[str, Any] | None) -> str:
-        if latest_run is None:
-            return "not_started"
-        if latest_run.get("status") == "running":
-            return "running"
-        return "ran_before"
-
-    def _task_sort_key(self, task: dict[str, Any]) -> tuple[int, str]:
-        order = {"running": 0, "ran_before": 1, "not_started": 2}
-        return (order.get(task.get("execution_state", "not_started"), 9), str(task.get("updated_at", "")))
-
-    def _recent_deliverables(self, limit: int = 8) -> list[dict[str, Any]]:
-        deliverables: list[dict[str, Any]] = []
+        recent_results = []
         for artifact in self.service.list_artifacts(limit=50):
-            classification = artifact.get("metadata", {}).get("classification")
-            if classification != "deliverable" and artifact.get("artifact_type") != "report":
+            if artifact.get("artifact_type") != "report":
                 continue
             task = self.service.get_task(artifact["task_id"])
             if task.get("parent_task_id") is not None:
@@ -845,260 +166,208 @@ class PersonalAgentRuntime:
             item = dict(artifact)
             item["task_title"] = task["title"]
             item["task_status"] = task["status"]
-            deliverables.append(item)
-            if len(deliverables) >= limit:
+            recent_results.append(item)
+            if len(recent_results) >= 12:
                 break
-        return deliverables
-
-    def _next_action_for_task(
-        self,
-        task: dict[str, Any],
-        latest_run: dict[str, Any] | None,
-        pending_approval: dict[str, Any] | None,
-    ) -> str:
-        metadata = task.get("metadata", {})
-        if metadata.get("awaiting_handoff_result") and metadata.get("awaiting_handoff_agent"):
-            return f"Await handoff result from {metadata['awaiting_handoff_agent']}"
-        if pending_approval is not None:
-            return f"Resolve approval {pending_approval['id']}"
-        if task["status"] == "blocked":
-            if task.get("requires_human_input"):
-                return "Provide blocker response"
-            return "Unblock task"
-        if latest_run and latest_run.get("status") == "running":
-            return "Worker running"
-        route = task.get("metadata", {}).get("route", {})
-        if route.get("delegation_target") == "ballbox-company-agent":
-            return f"Await handoff to {route['delegation_target']}"
-        if task["status"] == "in_progress":
-            return "Review in-progress state"
-        return "Ready for worker"
-
-    def _current_run_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
-        candidates = snapshot.get("active_tasks", []) + snapshot.get("blocked_tasks", [])
-        running = [task for task in candidates if task.get("execution_state") == "running" and task.get("latest_run")]
-        if running:
-            task = sorted(running, key=lambda item: item["latest_run"]["started_at"], reverse=True)[0]
-            return self._run_card(task)
-        started = [task for task in candidates if task.get("latest_run")]
-        if not started:
-            return None
-        task = sorted(started, key=lambda item: item["latest_run"]["started_at"], reverse=True)[0]
-        return self._run_card(task)
-
-    def _run_card(self, task: dict[str, Any]) -> dict[str, Any]:
-        latest_run = task["latest_run"]
+        draft_tasks = [self._decorate_task(task, latest_runs.get(task["id"])) for task in top_level if task["status"] == "draft"]
+        active_runs = [self._decorate_task(task, latest_runs.get(task["id"])) for task in top_level if task["status"] == "in_progress"]
+        failed_tasks = [self._decorate_task(task, latest_runs.get(task["id"])) for task in top_level if task["status"] == "failed"]
         return {
-            "task_id": task["id"],
-            "task_title": task["title"],
-            "task_status": task["status"],
-            "run_id": latest_run["id"],
-            "run_status": latest_run["status"],
-            "started_at": latest_run["started_at"],
-            "next_action": task["next_action"],
-            "open_subtask_count": task["open_subtask_count"],
+            "draft_tasks": draft_tasks,
+            "active_runs": active_runs,
+            "failed_tasks": failed_tasks,
+            "recent_results": recent_results,
+            "summary": {
+                "draft_count": len(draft_tasks),
+                "running_count": len(active_runs),
+                "failed_count": len(failed_tasks),
+                "result_count": len(recent_results),
+            },
         }
 
-    def _merged_task_metadata(self, task: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(task.get("metadata") or {})
-        merged.update(updates)
-        return merged
+    def task_bundle(self, task_id: str) -> dict[str, Any]:
+        bundle = self.service.task_bundle(task_id)
+        runs = bundle.get("runs") or []
+        latest_run = runs[0] if runs else None
+        artifacts = bundle.get("artifacts") or []
+        latest_artifact = artifacts[0] if artifacts else None
+        bundle["task"] = self._decorate_task(bundle["task"], latest_run)
+        bundle["latest_run"] = latest_run
+        bundle["latest_artifact"] = latest_artifact
+        return bundle
 
-    def _absorb_open_subtasks(self, task_id: str, run_id: str) -> None:
-        for child in self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=200):
-            if child.get("parent_task_id") != task_id or child.get("status") == "completed":
-                continue
+    def stop(self) -> None:
+        with self._process_lock:
+            active = list(self._processes.values())
+        for state in active:
+            if state.process.poll() is None:
+                state.process.terminate()
+
+    def _watch_run(self, run_id: str, stdout_handle: Any, stderr_handle: Any) -> None:
+        try:
+            with self._process_lock:
+                state = self._processes.get(run_id)
+            if state is None:
+                return
+            exit_code = state.process.wait()
+        finally:
+            stdout_handle.close()
+            stderr_handle.close()
+        task = self.service.get_task(state.task_id)
+        markdown = self._read_file(state.output_path)
+        stdout_text = self._read_file(state.stdout_path)
+        stderr_text = self._read_file(state.stderr_path)
+        report_body = markdown.strip() or stdout_text.strip()
+        if exit_code == 0 and report_body:
+            artifact = self.service.create_artifact(
+                task_id=task["id"],
+                artifact_type="report",
+                title=f"Codex result for {task['title']}",
+                content=report_body,
+                source_ref=PERSONAL_AGENT_ID,
+                metadata={
+                    "classification": "deliverable",
+                    "run_id": run_id,
+                    "cwd": task.get("metadata", {}).get("execution", {}).get("cwd"),
+                    "output_refs": self._extract_output_refs(report_body),
+                },
+            )
+            self.service.finish_task_run(run_id, status="succeeded", result_summary="Codex run completed")
             self.service.update_task(
-                child["id"],
+                task["id"],
                 status="completed",
                 blocked_reason=None,
                 requires_human_input=False,
                 metadata=self._merged_task_metadata(
-                    child,
-                    {"subtask_disposition": "absorbed", "absorbed_by_run_id": run_id},
+                    task,
+                    {"execution": {**dict(task.get("metadata", {}).get("execution") or {}), "result_artifact_id": artifact["id"]}},
                 ),
             )
-
-    def _complete_task_after_handoff(self, task: dict[str, Any], handoff: dict[str, Any], summary: str | None) -> None:
-        self._absorb_open_subtasks(task["id"], handoff.get("metadata", {}).get("created_by_run_id", ""))
-        self.service.update_task(
-            task["id"],
-            status="completed",
-            blocked_reason=None,
-            requires_human_input=False,
-            metadata=self._merged_task_metadata(
-                task,
-                {
-                    "awaiting_handoff_result": False,
-                    "awaiting_handoff_id": handoff["id"],
-                    "handoff_status": "completed",
-                    "handoff_summary": summary,
-                },
-            ),
-        )
-
-    def _recover_interrupted_runs(self) -> None:
-        running_runs = self.service.list_task_runs(status="running", limit=200)
-        for run in running_runs:
-            task = self.service.get_task(run["task_id"])
-            self.service.finish_task_run(
-                run["id"],
-                status="interrupted",
-                result_summary="Marked interrupted during runtime recovery.",
-                error_message="Daemon restarted before task run finished.",
+        else:
+            failure_report = "\n\n".join(
+                section
+                for section in [
+                    "# Codex run failed",
+                    f"- Exit code: {exit_code}",
+                    "## Stdout\n" + stdout_text.strip() if stdout_text.strip() else "",
+                    "## Stderr\n" + stderr_text.strip() if stderr_text.strip() else "",
+                ]
+                if section
             )
-            self.service.create_artifact(
+            artifact = self.service.create_artifact(
                 task_id=task["id"],
-                artifact_type="execution_state",
-                title="Recovered interrupted run",
-                content=json.dumps(
-                    {
-                        "run_id": run["id"],
-                        "outcome": "interrupted",
-                        "summary": "Recovered stale running task after daemon restart.",
-                    },
-                    indent=2,
-                    sort_keys=True,
-                ),
-                fmt="json",
+                artifact_type="run_failure",
+                title=f"Codex failure for {task['title']}",
+                content=failure_report,
                 source_ref=PERSONAL_AGENT_ID,
-                metadata={"task_run_id": run["id"], "outcome": "interrupted", "classification": "system"},
+                metadata={"classification": "intermediate", "run_id": run_id},
             )
-            if task.get("status") == "completed":
-                continue
-            if task.get("requires_human_input"):
-                continue
-            next_status = "in_progress" if task.get("metadata", {}).get("awaiting_handoff_result") else "open"
+            self.service.finish_task_run(
+                run_id,
+                status="failed",
+                result_summary="Codex run failed",
+                error_message=(stderr_text.strip() or stdout_text.strip() or "codex execution failed")[:500],
+            )
             self.service.update_task(
                 task["id"],
-                status=next_status,
-                blocked_reason=None,
-                requires_human_input=False,
-                metadata=self._merged_task_metadata(task, {"last_interrupted_run_id": run["id"]}),
-            )
-
-    def _reconcile_nonterminal_handoffs(self) -> None:
-        for handoff in self.service.list_handoffs(status="accepted", limit=200):
-            if handoff.get("to_agent") == "ai-dev-workflow":
-                task = self.service.get_task(handoff["task_id"])
-                summary = "Deprecated durable ai-dev-workflow handoff. Re-run this work through the code subagent."
-                self._set_handoff_status(
-                    handoff["id"],
-                    status="failed",
-                    result_summary=summary,
-                    error_message=summary,
-                    terminal=True,
-                )
-                self.service.update_task(
-                    task["id"],
-                    status="blocked",
-                    blocked_reason=summary,
-                    requires_human_input=True,
-                    metadata=self._merged_task_metadata(
-                        task,
-                        {
-                            "awaiting_handoff_result": False,
-                            "awaiting_handoff_id": handoff["id"],
-                            "awaiting_handoff_agent": handoff["to_agent"],
-                            "handoff_status": "failed",
-                        },
-                    ),
-                )
-                self.service.create_artifact(
-                    task_id=handoff["task_id"],
-                    artifact_type="handoff_result",
-                    title=f"Handoff result from {handoff['to_agent']}",
-                    content=json.dumps({"status": "failed", "summary": summary}, indent=2, sort_keys=True),
-                    fmt="json",
-                    source_ref=handoff["to_agent"],
-                    metadata={"handoff_id": handoff["id"], "classification": "system"},
-                )
-                continue
-            if handoff.get("to_agent") != "ballbox-company-agent":
-                continue
-            task = self.service.get_task(handoff["task_id"])
-            if task.get("metadata", {}).get("handoff_status") == "completed":
-                continue
-            if task.get("status") == "in_progress" and task.get("metadata", {}).get("awaiting_handoff_result"):
-                continue
-            self.service.update_task(
-                task["id"],
-                status="in_progress",
+                status="failed",
                 blocked_reason=None,
                 requires_human_input=False,
                 metadata=self._merged_task_metadata(
                     task,
-                    {
-                        "awaiting_handoff_result": True,
-                        "awaiting_handoff_id": handoff["id"],
-                        "awaiting_handoff_agent": handoff["to_agent"],
-                        "handoff_status": "accepted",
-                    },
+                    {"execution": {**dict(task.get("metadata", {}).get("execution") or {}), "failure_artifact_id": artifact["id"]}},
                 ),
             )
+        with self._process_lock:
+            self._processes.pop(run_id, None)
 
-    def _set_handoff_status(
-        self,
-        handoff_id: str,
-        *,
-        status: str,
-        result_summary: str | None = None,
-        error_message: str | None = None,
-        terminal: bool,
-    ) -> None:
-        if hasattr(self.service, "update_handoff_status"):
-            self.service.update_handoff_status(
-                handoff_id,
-                status=status,
-                result_summary=result_summary,
-                error_message=error_message,
+    def _recover_interrupted_runs(self) -> None:
+        running_runs = self.service.list_task_runs(status="running", limit=200)
+        for run in running_runs:
+            self.service.finish_task_run(
+                run["id"],
+                status="failed",
+                result_summary="Recovered interrupted run after daemon restart",
+                error_message="Daemon restarted before Codex finished",
             )
-            return
-        if terminal:
-            self.service.complete_handoff(
-                handoff_id,
-                status=status,
-                result_summary=result_summary,
-            )
-            return
-        now = datetime.now(timezone.utc).isoformat()
-        with self.service.store.connection() as conn:
-            conn.execute(
-                """
-                UPDATE handoffs
-                SET status = ?, result_summary = ?, error_message = ?, updated_at = ?, completed_at = NULL
-                WHERE id = ?
-                """,
-                (status, result_summary, error_message, now, handoff_id),
-            )
+            task = self.service.get_task(run["task_id"])
+            if task.get("status") == "in_progress":
+                self.service.update_task(
+                    task["id"],
+                    status="failed",
+                    blocked_reason=None,
+                    requires_human_input=False,
+                    metadata=self._merged_task_metadata(task, {"execution": {**dict(task.get("metadata", {}).get("execution") or {}), "recovered_run_id": run["id"]}}),
+                )
 
-    def _normalized_intent(self, text: str, route: dict[str, Any], memory_context: list[dict[str, Any]]) -> str:
-        lines = [
-            f"Request: {text}",
-            f"Primary route: {route['primary_agent']}",
-            f"Secondary route: {route.get('secondary_agent') or 'none'}",
-            f"Reason: {route['reason']}",
-            f"Planning source: {route.get('planning_source', 'unknown')}",
-        ]
-        if route.get("codex_instruction"):
-            lines.append(f"Codex instruction: {route['codex_instruction']}")
-        if memory_context:
-            lines.append("Relevant memory:")
-            for match in memory_context[:3]:
-                memory = match["memory"]
-                lines.append(f"- {memory['title']} [{memory['id']}]")
-        return "\n".join(lines)
+    def _decorate_task(self, task: dict[str, Any], latest_run: dict[str, Any] | None) -> dict[str, Any]:
+        decorated = dict(task)
+        execution = dict(task.get("metadata", {}).get("execution") or {})
+        decorated["execution"] = execution
+        decorated["latest_run"] = latest_run
+        decorated["cwd"] = execution.get("cwd") or execution.get("suggested_cwd")
+        decorated["suggested_cwd"] = execution.get("suggested_cwd")
+        decorated["permission_mode"] = execution.get("permission_mode", "danger-full-access")
+        return decorated
 
-    def _plan_artifact(self, text: str, route: dict[str, Any], subtasks: list[dict[str, Any]]) -> str:
-        lines = [f"# Plan for {self._task_title(text)}", "", f"- Route: {route['primary_agent']}"]
-        if route.get("secondary_agent"):
-            lines.append(f"- Secondary route: {route['secondary_agent']}")
-        lines.append(f"- Planning source: {route.get('planning_source', 'unknown')}")
-        if route.get("delegation_target"):
-            lines.append(f"- Delegation target: {route['delegation_target']}")
-        if route.get("codex_instruction"):
-            lines.append(f"- Codex instruction: {route['codex_instruction']}")
-        lines.extend(["", "## Subtasks"])
-        for task in subtasks:
-            lines.append(f"- {task['title']}")
-        return "\n".join(lines)
+    def _build_prompt(self, intent: str, cwd: str, memory_context: list[dict[str, Any]] | None = None) -> str:
+        memory_lines = []
+        for match in memory_context or []:
+            memory = match.get("memory", {})
+            title = memory.get("title", "Untitled memory")
+            summary = memory.get("summary") or memory.get("content", "")
+            memory_lines.append(f"- {title}: {summary}")
+        memory_block = "\n".join(memory_lines[:3]) if memory_lines else "- none"
+        return "\n".join(
+            [
+                "You are running as a direct Codex execution for personal-agent.",
+                f"Work from this repository root: {cwd}",
+                "Use the repository's local rules and skills.",
+                "Implement directly when needed.",
+                "Return markdown only.",
+                "Include these sections:",
+                "- Summary",
+                "- Changes",
+                "- Verification",
+                "- Outputs",
+                "In Outputs, list any branch, PR, file paths, or artifacts created.",
+                "",
+                f"Task: {intent}",
+                "Relevant memory:",
+                memory_block,
+            ]
+        )
+
+    def _extract_output_refs(self, text: str) -> dict[str, list[str]]:
+        refs = {
+            "pull_requests": sorted(set(re.findall(r"\bPR\s*[#:]\s*([0-9]+)\b", text, flags=re.IGNORECASE))),
+            "branches": sorted(set(re.findall(r"\bbranch:\s*([A-Za-z0-9._/-]+)", text, flags=re.IGNORECASE))),
+            "paths": sorted(
+                {
+                    match
+                    for match in re.findall(r"`([^`\n]+/[^\n`]+)`", text)
+                    if not match.startswith("http") and not match.startswith("https")
+                }
+            ),
+        }
+        return {key: value for key, value in refs.items() if value}
+
+    def _task_title(self, text: str) -> str:
+        compact = " ".join(text.split())
+        return compact if len(compact) <= 100 else compact[:97] + "..."
+
+    def _merged_task_metadata(self, task: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(task.get("metadata") or {})
+        for key, value in updates.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                nested = dict(merged[key])
+                nested.update(value)
+                merged[key] = nested
+            else:
+                merged[key] = value
+        return merged
+
+    def _read_file(self, path: Path) -> str:
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")

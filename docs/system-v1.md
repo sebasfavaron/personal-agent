@@ -6,9 +6,8 @@
 
 - `personal-agent`
   - daemon
-  - event worker
   - dashboard at `127.0.0.1:8082`
-  - intake, blockers, orchestration
+  - intake draft + cwd confirmation + direct Codex launch
 - `agents-database`
   - canonical shared state
   - `shared-agent-memory.sqlite3`
@@ -19,8 +18,7 @@
 - `ai-dev-workflow`
   - code/repo subagent
 - `codex`
-  - planning backend for intake/orchestration
-  - execution backend for personal-agent worker in read-only report mode
+  - direct execution backend for one task per spawned run
 - GitHub
   - public persistence for repo changes and V1 cross-references
 
@@ -109,8 +107,7 @@ Operator note:
 - `personal.py` accepts `--json` before or after subcommands
 - dashboard loads at `:8082`
 - shared DB contains tasks, runs, artifacts, handoffs
-- downstream specialist agents may return non-terminal `accepted` handoff results first
-- parent tasks must not be marked complete until an explicit downstream terminal result arrives
+- draft tasks must not launch until the human confirms or edits the inferred cwd
 - `codex exec` is available on PATH
 
 ## Recovery / Backup
@@ -124,10 +121,8 @@ Minimum backup set:
 
 ## V1 Notes
 
-- blockers should resolve from memory before asking the human when possible
-- intake routing/subtask planning should prefer Codex and fall back to local heuristics if Codex is unavailable
-- personal-agent worker uses `codex exec` to return structured outcomes: complete, blocked, or needs_approval
-- Python applies those outcomes to shared DB state, artifacts, task runs, and approval records
-- personal-agent worker also passes `--add-dir ~/agents-database` so shared DB writes remain available inside the sandbox when needed
-- status surfaces expose `summary`, `next_action`, `latest_run`, `pending_approval`, `open_subtask_count`, and `route_summary`
-- specialist repos are invoked through a stable `run-task` subagent contract
+- intake infers a repo/cwd, but the UI exposes it for confirmation before launch
+- each accepted task spawns its own `codex exec` process from the chosen cwd
+- the default execution mode is `danger-full-access`
+- Python persists task state, task runs, stdout/stderr paths, and the final markdown artifact
+- status surfaces expose `draft_tasks`, `active_runs`, `failed_tasks`, and `recent_results`
