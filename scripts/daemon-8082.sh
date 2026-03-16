@@ -6,6 +6,11 @@ PORT="8082"
 HOST="127.0.0.1"
 LOG_FILE="/tmp/personal-agent-daemon-8082.log"
 PID_FILE="/tmp/personal-agent-daemon-8082.pid"
+LAUNCHD_HELPER="${ROOT}/scripts/launchd-8082.sh"
+
+use_launchd() {
+  [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1 && [ -x "${LAUNCHD_HELPER}" ]
+}
 
 healthcheck() {
   curl -fsS "http://${HOST}:${PORT}/api/status" >/dev/null 2>&1
@@ -16,6 +21,16 @@ pid_command_matches() {
   local command
   command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   [[ "$command" == *"scripts/personal.py daemon"* ]]
+}
+
+current_listener_pid() {
+  local pid
+  pid="$(find_pid || true)"
+  if [ -n "${pid:-}" ] && pid_command_matches "$pid"; then
+    echo "$pid"
+    return 0
+  fi
+  return 1
 }
 
 read_pid_file() {
@@ -57,6 +72,34 @@ wait_for_port_state() {
 }
 
 start_daemon() {
+  if use_launchd; then
+    local pid foreign_pid
+    pid="$(current_listener_pid || true)"
+    if [ -n "${pid:-}" ]; then
+      if healthcheck; then
+        echo "already listening on ${HOST}:${PORT} (pid ${pid})"
+        echo "log ${LOG_FILE}"
+        return
+      fi
+      kill "$pid" 2>/dev/null || true
+      wait_for_port_state "free" || true
+    fi
+    foreign_pid="$(find_pid || true)"
+    if [ -n "${foreign_pid:-}" ]; then
+      echo "foreign listener already owns ${HOST}:${PORT} (pid ${foreign_pid}); refusing to start" >&2
+      exit 1
+    fi
+    "${LAUNCHD_HELPER}" start
+    if ! wait_for_port_state "listening"; then
+      echo "failed to start daemon on ${HOST}:${PORT}" >&2
+      exit 1
+    fi
+    if ! healthcheck; then
+      echo "daemon opened port but failed healthcheck on ${HOST}:${PORT}" >&2
+      exit 1
+    fi
+    return
+  fi
   local existing_pid foreign_pid
   existing_pid="$(daemon_pid || true)"
   if [ -n "${existing_pid:-}" ]; then
@@ -99,6 +142,16 @@ start_daemon() {
 }
 
 stop_daemon() {
+  if use_launchd; then
+    "${LAUNCHD_HELPER}" stop
+    local pid
+    pid="$(current_listener_pid || true)"
+    if [ -n "${pid:-}" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait_for_port_state "free" || true
+    fi
+    return
+  fi
   local pid
   pid="$(daemon_pid || true)"
   if [ -z "${pid:-}" ]; then
@@ -123,6 +176,26 @@ stop_daemon() {
 }
 
 status_daemon() {
+  if use_launchd; then
+    local pid
+    pid="$(current_listener_pid || true)"
+    if [ -n "${pid:-}" ]; then
+      echo "daemon listening on ${HOST}:${PORT}"
+      echo "pid ${pid}"
+      echo "ui http://${HOST}:${PORT}/"
+      echo "status http://${HOST}:${PORT}/api/status"
+      if healthcheck; then
+        echo "health ok"
+      else
+        echo "health failing"
+        exit 1
+      fi
+      echo "log ${LOG_FILE}"
+      return
+    fi
+    "${LAUNCHD_HELPER}" status
+    return
+  fi
   local pid
   pid="$(daemon_pid || true)"
   if [ -z "${pid:-}" ]; then
@@ -148,11 +221,23 @@ status_daemon() {
 }
 
 logs_daemon() {
+  if use_launchd; then
+    "${LAUNCHD_HELPER}" logs
+    return
+  fi
   touch "$LOG_FILE"
   tail -n 40 "$LOG_FILE"
 }
 
 restart_daemon() {
+  if use_launchd; then
+    (
+      cd "$ROOT"
+      python3 scripts/personal.py pause-running --reason "daemon-8082.sh restart on ${HOST}:${PORT}"
+    ) || true
+    "${LAUNCHD_HELPER}" restart
+    return
+  fi
   (
     cd "$ROOT"
     python3 scripts/personal.py pause-running --reason "daemon-8082.sh restart on ${HOST}:${PORT}"
