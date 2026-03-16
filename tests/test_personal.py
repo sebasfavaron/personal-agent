@@ -22,8 +22,24 @@ class FakeMemoryService:
 
     def ingest(self, payload: dict) -> dict:
         record = dict(payload)
-        self.records.append(record)
+        now = datetime.now(timezone.utc).isoformat()
+        record.setdefault("created_at", now)
+        record.setdefault("updated_at", now)
+        record.setdefault("observed_at", now)
+        record.setdefault("metadata", {})
+        for index, existing in enumerate(self.records):
+            if existing.get("id") == record.get("id"):
+                self.records[index] = record
+                break
+        else:
+            self.records.append(record)
         return record
+
+    def get_memory(self, memory_id: str) -> dict:
+        for record in self.records:
+            if record.get("id") == memory_id:
+                return dict(record)
+        raise KeyError(memory_id)
 
     def search(self, query: str, scopes: list[str] | None = None, limit: int = 10) -> dict:
         scopes = scopes or []
@@ -338,64 +354,49 @@ class PersonalAgentTests(unittest.TestCase):
         self.agents_db_dir = Path(self.tmp.name) / "agents-database"
         self.agents_db_dir.mkdir()
         self._original_config = {}
-        self._original_db = {}
         self._original_shared_memory = {}
         self._original_env = {
-            "PERSONAL_AGENT_DATA_DIR": os.environ.get("PERSONAL_AGENT_DATA_DIR"),
             "PERSONAL_AGENT_SHARED_MEMORY_ROOT": os.environ.get("PERSONAL_AGENT_SHARED_MEMORY_ROOT"),
             "PERSONAL_AGENT_SHARED_MEMORY_DB_PATH": os.environ.get("PERSONAL_AGENT_SHARED_MEMORY_DB_PATH"),
         }
-        os.environ["PERSONAL_AGENT_DATA_DIR"] = self.tmp.name
         os.environ["PERSONAL_AGENT_SHARED_MEMORY_ROOT"] = str(self.agents_db_dir)
         os.environ["PERSONAL_AGENT_SHARED_MEMORY_DB_PATH"] = str(Path(self.tmp.name) / "shared-agent-memory.sqlite3")
 
         from personal_agent import config
-        from personal_agent import db
         from personal_agent import shared_memory
 
         self._original_config = {
-            "DATA_DIR": config.DATA_DIR,
-            "DB_PATH": config.DB_PATH,
             "SHARED_MEMORY_ROOT": config.SHARED_MEMORY_ROOT,
             "SHARED_MEMORY_SRC_DIR": config.SHARED_MEMORY_SRC_DIR,
             "SHARED_MEMORY_DB_PATH": config.SHARED_MEMORY_DB_PATH,
-        }
-        self._original_db = {
-            "DATA_DIR": db.DATA_DIR,
-            "DB_PATH": db.DB_PATH,
         }
         self._original_shared_memory = {
             "SHARED_MEMORY_SRC_DIR": shared_memory.SHARED_MEMORY_SRC_DIR,
             "SHARED_MEMORY_DB_PATH": shared_memory.SHARED_MEMORY_DB_PATH,
         }
-        config.DATA_DIR = Path(self.tmp.name)
-        config.DB_PATH = config.DATA_DIR / "test.sqlite3"
         config.SHARED_MEMORY_ROOT = self.agents_db_dir
-        config.SHARED_MEMORY_SRC_DIR = config.SHARED_MEMORY_ROOT / "src"
+        config.SHARED_MEMORY_SRC_DIR = Path.home() / "agents-database" / "src"
         config.SHARED_MEMORY_DB_PATH = Path(self.tmp.name) / "shared-agent-memory.sqlite3"
-        db.DATA_DIR = config.DATA_DIR
-        db.DB_PATH = config.DB_PATH
         shared_memory.SHARED_MEMORY_SRC_DIR = config.SHARED_MEMORY_SRC_DIR
         shared_memory.SHARED_MEMORY_DB_PATH = config.SHARED_MEMORY_DB_PATH
 
-        db.ensure_db()
         self.fake_operational_memory = FakeOperationalMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
+        self.shared_memory_service_patcher = patch(
+            "personal_agent.shared_memory.get_memory_service", return_value=self.fake_operational_memory
+        )
+        self.shared_memory_service_patcher.start()
         self.runtime_memory_patcher = patch("personal_agent.runtime.get_memory_service", return_value=self.fake_operational_memory)
         self.runtime_memory_patcher.start()
 
     def tearDown(self) -> None:
         from personal_agent import config
-        from personal_agent import db
         from personal_agent import shared_memory
 
+        self.shared_memory_service_patcher.stop()
         self.runtime_memory_patcher.stop()
-        config.DATA_DIR = self._original_config["DATA_DIR"]
-        config.DB_PATH = self._original_config["DB_PATH"]
         config.SHARED_MEMORY_ROOT = self._original_config["SHARED_MEMORY_ROOT"]
         config.SHARED_MEMORY_SRC_DIR = self._original_config["SHARED_MEMORY_SRC_DIR"]
         config.SHARED_MEMORY_DB_PATH = self._original_config["SHARED_MEMORY_DB_PATH"]
-        db.DATA_DIR = self._original_db["DATA_DIR"]
-        db.DB_PATH = self._original_db["DB_PATH"]
         shared_memory.SHARED_MEMORY_SRC_DIR = self._original_shared_memory["SHARED_MEMORY_SRC_DIR"]
         shared_memory.SHARED_MEMORY_DB_PATH = self._original_shared_memory["SHARED_MEMORY_DB_PATH"]
         self.tmp.cleanup()
@@ -547,24 +548,15 @@ class PersonalAgentTests(unittest.TestCase):
 
     def test_legacy_memory_can_be_migrated_to_shared_store(self) -> None:
         from personal_agent.migration import migrate_legacy_memory
-        from personal_agent.research_store import add_claim, add_source, add_task, close_research, start_research
         fake_service = FakeMemoryService(str(Path(self.tmp.name) / "shared-agent-memory.sqlite3"))
-
-        run = start_research("Investigate shared memory")
-        run_id = run["run"]["id"]
-        add_source(run_id, "https://example.com/shared", "Shared", "reference")
-        add_claim(run_id, "Shared memory improves cross-agent recall.", 0.9, "verified", "https://example.com/shared")
-        add_task(run_id, "Import old research memory")
-        close_research(run_id, "Shared memory should become canonical.")
 
         with patch("personal_agent.shared_memory.get_memory_service", return_value=fake_service), patch(
             "personal_agent.migration.get_memory_service", return_value=fake_service
         ):
             result = migrate_legacy_memory()
 
-        search = fake_service.search("cross-agent recall", scopes=["global"])
-        self.assertTrue(search["results"])
-        self.assertEqual(result["migrated"]["runs"], 1)
+        self.assertEqual(result["status"], "noop")
+        self.assertEqual(result["migrated"]["runs"], 0)
 
     def test_get_run_falls_back_to_shared_legacy_bridge(self) -> None:
         from personal_agent.research_store import get_run
