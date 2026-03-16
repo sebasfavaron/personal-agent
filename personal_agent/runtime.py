@@ -126,7 +126,7 @@ class PersonalAgentRuntime:
         snapshot = self.service.dashboard_snapshot(owner_agent=PERSONAL_AGENT_ID)
         accepted_handoffs = self.service.list_handoffs(status="accepted", limit=20)
         snapshot["pending_handoffs"] = snapshot.get("pending_handoffs", []) + [
-            handoff for handoff in accepted_handoffs if handoff["to_agent"] in {"ai-dev-workflow", "ballbox-company-agent"}
+            handoff for handoff in accepted_handoffs if handoff["to_agent"] == "ballbox-company-agent"
         ]
         snapshot["active_tasks"] = [task for task in snapshot.get("active_tasks", []) if task.get("parent_task_id") is None]
         snapshot["blocked_tasks"] = [task for task in snapshot.get("blocked_tasks", []) if task.get("parent_task_id") is None]
@@ -251,7 +251,7 @@ class PersonalAgentRuntime:
             if task["parent_task_id"] is not None:
                 continue
             route = task["metadata"].get("route", {})
-            if route.get("primary_agent") in {"company", "code"}:
+            if route.get("primary_agent") == "company":
                 continue
             processed.append(self._run_task_with_codex(task))
         return {"processed": processed}
@@ -294,19 +294,43 @@ class PersonalAgentRuntime:
     def _dispatch_handoff(self, handoff: dict[str, Any]) -> dict[str, Any]:
         payload = handoff["payload"]
         if handoff["to_agent"] == "ai-dev-workflow":
-            command = [
-                "python3",
-                str(AI_DEV_WORKFLOW_ROOT / "scripts" / "ai_dev_workflow_memory.py"),
-                "run-task",
-                "--task-id",
-                payload["task_id"],
-                "--origin",
-                PERSONAL_AGENT_ID,
-                "--reason",
-                handoff["reason"],
-                "--payload-json",
-                json.dumps(payload),
-            ]
+            parsed = {
+                "status": "failed",
+                "summary": "Deprecated durable ai-dev-workflow handoff. Run code work as an in-process Codex subagent instead.",
+            }
+            status = parsed["status"]
+            is_terminal = True
+            self._set_handoff_status(
+                handoff["id"],
+                status=status,
+                result_summary=parsed.get("summary"),
+                terminal=is_terminal,
+            )
+            self.service.create_artifact(
+                task_id=handoff["task_id"],
+                artifact_type="handoff_result",
+                title=f"Handoff result from {handoff['to_agent']}",
+                content=json.dumps(parsed, indent=2, sort_keys=True),
+                fmt="json",
+                source_ref=handoff["to_agent"],
+                metadata={"handoff_id": handoff["id"], "classification": "system"},
+            )
+            task = self.service.get_task(handoff["task_id"])
+            self.service.update_task(
+                task["id"],
+                status="blocked",
+                blocked_reason=parsed["summary"],
+                requires_human_input=True,
+                metadata=self._merged_task_metadata(
+                    task,
+                    {
+                        "awaiting_handoff_result": False,
+                        "awaiting_handoff_id": handoff["id"],
+                        "handoff_status": status,
+                    },
+                ),
+            )
+            return {"kind": "handoff", "handoff_id": handoff["id"], "status": status}
         elif handoff["to_agent"] == "ballbox-company-agent":
             command = [
                 "python3",
@@ -379,17 +403,21 @@ class PersonalAgentRuntime:
         return {"kind": "handoff", "handoff_id": handoff["id"], "status": status}
 
     def _run_task_with_codex(self, task: dict[str, Any]) -> dict[str, Any]:
-        run = self.service.start_task_run(task["id"], PERSONAL_AGENT_ID, input_payload={"mode": "codex-agentic"})
+        route = task.get("metadata", {}).get("route", {})
+        mode = "code-subagent" if route.get("primary_agent") == "code" else "codex-agentic"
+        run = self.service.start_task_run(task["id"], PERSONAL_AGENT_ID, input_payload={"mode": mode})
         with tempfile.NamedTemporaryFile(prefix="personal-agent-task-", suffix=".json", delete=False) as handle:
             output_path = Path(handle.name)
         prompt = self._task_execution_prompt(task)
+        repo_root = AI_DEV_WORKFLOW_ROOT if route.get("primary_agent") == "code" else PERSONAL_ROOT
+        sandbox_mode = "workspace-write" if route.get("primary_agent") == "code" else "read-only"
         command = [
             CODEX_BIN,
             "exec",
             "--sandbox",
-            "read-only",
+            sandbox_mode,
             "-C",
-            str(PERSONAL_ROOT),
+            str(repo_root),
             "-o",
             str(output_path),
         ]
@@ -431,6 +459,56 @@ class PersonalAgentRuntime:
         prior_artifacts = self.service.list_artifacts(task_id=task["id"], limit=20)
         subtask_lines = [f"- {item['title']}: {item['intent']}" for item in child_subtasks[:6]] or ["- none"]
         artifact_lines = [f"- {item['artifact_type']}: {item['title']}" for item in prior_artifacts[:8]] or ["- none"]
+        if route.get("primary_agent") == "code":
+            return "\n".join(
+                [
+                    "You are a clean Codex subagent running inside the ai-dev-workflow repository.",
+                    "Treat this as a concrete code task, not as orchestration.",
+                    "Start from the current repository context and its local skills.",
+                    "Keep focus narrow; ignore unrelated parent-task context unless it is explicitly included below.",
+                    "Return JSON only with this exact shape:",
+                    "{",
+                    '  "outcome": "complete|blocked|needs_approval",',
+                    '  "summary": "short summary",',
+                    '  "report_title": "short title",',
+                    '  "report_markdown": "markdown report",',
+                    '  "blocker_reason": "required when outcome is blocked",',
+                    '  "approval": {',
+                    '    "kind": "required when outcome is needs_approval",',
+                    '    "risk_level": "low|medium|high",',
+                    '    "payload": {"summary": "what needs approval"}',
+                    "  },",
+                    '  "actions": [',
+                    '    {',
+                    '      "type": "create_followup_task|record_artifact",',
+                    '      "title": "short title",',
+                    '      "intent": "required for create_followup_task",',
+                    '      "priority": 0,',
+                    '      "artifact_type": "note",',
+                    '      "content": "required for record_artifact",',
+                    '      "payload": {}',
+                    "    }",
+                    "  ]",
+                    "}",
+                    "Rules:",
+                    "- Implement directly when safe and possible in this repo.",
+                    "- Use complete only when the requested code work or a safe concrete slice is actually done.",
+                    "- Use blocked when missing context prevents safe progress.",
+                    "- Use needs_approval for side effects or irreversible actions.",
+                    "- Do not create handoffs to ai-dev-workflow; you already are that subagent.",
+                    "- create_followup_task is for durable leftover work only.",
+                    "- record_artifact is for notes worth preserving.",
+                    "- Always include report_markdown with findings, changes, verification, and next actions.",
+                    "",
+                    f"Task title: {task['title']}",
+                    f"Task intent: {task['intent']}",
+                    f"Reason: {route.get('reason', 'n/a')}",
+                    "Open subtasks:",
+                    *subtask_lines,
+                    "Existing artifacts:",
+                    *artifact_lines,
+                ]
+            )
         return "\n".join(
             [
                 "You are the acting executor for a personal-agent task.",
@@ -454,7 +532,7 @@ class PersonalAgentRuntime:
                 '      "title": "short title",',
                 '      "intent": "required for create_followup_task",',
                 '      "priority": 0,',
-                '      "to_agent": "ai-dev-workflow|ballbox-company-agent",',
+                '      "to_agent": "ballbox-company-agent",',
                 '      "reason": "required for create_handoff",',
                 '      "artifact_type": "note",',
                 '      "content": "required for record_artifact",',
@@ -467,7 +545,7 @@ class PersonalAgentRuntime:
                 "- Use blocked when more context is required before safe progress.",
                 "- Use needs_approval when the next meaningful step has external side effects or irreversible risk.",
                 "- Use actions when Python should queue durable operational steps before the terminal outcome.",
-                "- create_handoff is for specialist repo work; keep payload small and explicit.",
+                "- create_handoff is only for ballbox-company-agent; code work should run directly in this Codex execution.",
                 "- create_followup_task is for durable next steps that should survive this run.",
                 "- record_artifact is for structured notes worth preserving in shared memory.",
                 "- Always include report_markdown with findings, risks, and recommended next actions.",
@@ -476,6 +554,11 @@ class PersonalAgentRuntime:
                 f"Task intent: {task['intent']}",
                 f"Route: {route.get('primary_agent', 'personal')}",
                 f"Reason: {route.get('reason', 'n/a')}",
+                (
+                    "Execution mode: code subagent in ai-dev-workflow repo; inspect and implement directly when needed."
+                    if route.get("primary_agent") == "code"
+                    else "Execution mode: personal-agent read-only analysis."
+                ),
                 "Open subtasks:",
                 *subtask_lines,
                 "Existing artifacts:",
@@ -668,7 +751,7 @@ class PersonalAgentRuntime:
                 to_agent = str(action.get("to_agent") or "").strip()
                 reason = str(action.get("reason") or "").strip()
                 payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
-                if to_agent not in {"ai-dev-workflow", "ballbox-company-agent"} or not reason:
+                if to_agent != "ballbox-company-agent" or not reason:
                     raise ValueError("create_handoff requires supported to_agent and reason")
                 handoff = self.service.create_handoff(
                     task_id=task["id"],
@@ -886,7 +969,42 @@ class PersonalAgentRuntime:
 
     def _reconcile_nonterminal_handoffs(self) -> None:
         for handoff in self.service.list_handoffs(status="accepted", limit=200):
-            if handoff.get("to_agent") not in {"ai-dev-workflow", "ballbox-company-agent"}:
+            if handoff.get("to_agent") == "ai-dev-workflow":
+                task = self.service.get_task(handoff["task_id"])
+                summary = "Deprecated durable ai-dev-workflow handoff. Re-run this work through the code subagent."
+                self._set_handoff_status(
+                    handoff["id"],
+                    status="failed",
+                    result_summary=summary,
+                    error_message=summary,
+                    terminal=True,
+                )
+                self.service.update_task(
+                    task["id"],
+                    status="blocked",
+                    blocked_reason=summary,
+                    requires_human_input=True,
+                    metadata=self._merged_task_metadata(
+                        task,
+                        {
+                            "awaiting_handoff_result": False,
+                            "awaiting_handoff_id": handoff["id"],
+                            "awaiting_handoff_agent": handoff["to_agent"],
+                            "handoff_status": "failed",
+                        },
+                    ),
+                )
+                self.service.create_artifact(
+                    task_id=handoff["task_id"],
+                    artifact_type="handoff_result",
+                    title=f"Handoff result from {handoff['to_agent']}",
+                    content=json.dumps({"status": "failed", "summary": summary}, indent=2, sort_keys=True),
+                    fmt="json",
+                    source_ref=handoff["to_agent"],
+                    metadata={"handoff_id": handoff["id"], "classification": "system"},
+                )
+                continue
+            if handoff.get("to_agent") != "ballbox-company-agent":
                 continue
             task = self.service.get_task(handoff["task_id"])
             if task.get("metadata", {}).get("handoff_status") == "completed":
@@ -918,20 +1036,19 @@ class PersonalAgentRuntime:
         error_message: str | None = None,
         terminal: bool,
     ) -> None:
-        if terminal:
-            self.service.complete_handoff(
-                handoff_id,
-                status=status,
-                result_summary=result_summary,
-                error_message=error_message,
-            )
-            return
         if hasattr(self.service, "update_handoff_status"):
             self.service.update_handoff_status(
                 handoff_id,
                 status=status,
                 result_summary=result_summary,
                 error_message=error_message,
+            )
+            return
+        if terminal:
+            self.service.complete_handoff(
+                handoff_id,
+                status=status,
+                result_summary=result_summary,
             )
             return
         now = datetime.now(timezone.utc).isoformat()

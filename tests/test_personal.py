@@ -720,11 +720,11 @@ class PersonalAgentTests(unittest.TestCase):
                         "primary_agent": "code",
                         "secondary_agent": None,
                         "reason": "repo implementation work",
-                        "delegation_target": "ai-dev-workflow",
+                        "delegation_target": None,
                         "codex_instruction": "Let the code agent inspect and execute.",
                         "subtasks": [
                             {"title": "Inspect repo state", "detail": "Read the local repository context first."},
-                            {"title": "Delegate implementation", "detail": "Send the coding work to ai-dev-workflow."},
+                            {"title": "Run code subagent", "detail": "Execute the coding work inside the codex subagent."},
                             {"title": "Review outcome", "detail": "Summarize results and next steps."},
                         ],
                     }
@@ -738,7 +738,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         self.assertEqual(result.task["metadata"]["route"]["primary_agent"], "code")
         self.assertEqual(result.task["metadata"]["route"]["planning_source"], "codex")
-        self.assertEqual(result.handoff["to_agent"], "ai-dev-workflow")
+        self.assertIsNone(result.handoff)
         self.assertEqual(result.subtasks[0]["title"], "Inspect repo state")
 
     def test_runtime_blocker_response_reopens_task(self) -> None:
@@ -961,12 +961,6 @@ class PersonalAgentTests(unittest.TestCase):
                                 "priority": 1,
                             },
                             {
-                                "type": "create_handoff",
-                                "to_agent": "ai-dev-workflow",
-                                "reason": "Need repo execution",
-                                "payload": {"intent": "Finish the coding step"},
-                            },
-                            {
                                 "type": "record_artifact",
                                 "artifact_type": "implementation_note",
                                 "title": "Why split work",
@@ -983,25 +977,24 @@ class PersonalAgentTests(unittest.TestCase):
             payload = runtime.process_once()
 
         updated = runtime.service.get_task(task["id"])
-        children = runtime.service.list_tasks(status="open", owner_agent=PERSONAL_AGENT_ID, limit=20)
+        children = runtime.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=20)
         handoffs = runtime.service.list_handoffs(status="pending", limit=20)
         artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=20)
 
         self.assertTrue(payload["processed"])
-        self.assertEqual(updated["status"], "in_progress")
-        self.assertTrue(updated["metadata"]["awaiting_handoff_result"])
-        self.assertEqual(len(payload["processed"][0]["actions"]), 3)
-        self.assertTrue(any(item["parent_task_id"] == task["id"] for item in children))
-        self.assertTrue(any(handoff["task_id"] == task["id"] for handoff in handoffs))
+        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(len(payload["processed"][0]["actions"]), 2)
+        self.assertTrue(any(item["parent_task_id"] == task["id"] and item["status"] == "completed" for item in children))
+        self.assertFalse(any(handoff["task_id"] == task["id"] for handoff in handoffs))
         self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
         self.assertTrue(
             any(
-                artifact["artifact_type"] == "report" and artifact["metadata"].get("classification") == "intermediate"
+                artifact["artifact_type"] == "report" and artifact["metadata"].get("classification") == "deliverable"
                 for artifact in artifacts
             )
         )
 
-    def test_runtime_dispatch_handoff_acceptance_keeps_task_in_progress(self) -> None:
+    def test_runtime_dispatch_legacy_ai_dev_workflow_handoff_blocks_task(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
@@ -1018,23 +1011,15 @@ class PersonalAgentTests(unittest.TestCase):
             reason="Need repo execution",
             payload={"task_id": task["id"], "intent": task["intent"]},
         )
-
-        fake_completed = type(
-            "CompletedProcess",
-            (),
-            {"stdout": json.dumps({"status": "accepted", "summary": "Repo task accepted"}), "stderr": ""},
-        )()
-
-        with patch("personal_agent.runtime.subprocess.run", return_value=fake_completed):
-            result = runtime.process_once()
+        result = runtime.process_once()
 
         updated_handoffs = runtime.service.list_handoffs(limit=10)
         updated_task = runtime.service.get_task(task["id"])
         artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=10)
         self.assertEqual(result["processed"][0]["kind"], "handoff")
-        self.assertEqual(updated_handoffs[0]["status"], "accepted")
-        self.assertEqual(updated_task["status"], "in_progress")
-        self.assertTrue(updated_task["metadata"]["awaiting_handoff_result"])
+        self.assertEqual(updated_handoffs[0]["status"], "failed")
+        self.assertEqual(updated_task["status"], "blocked")
+        self.assertIn("Deprecated durable ai-dev-workflow handoff", updated_task["blocked_reason"])
         self.assertTrue(any(item["artifact_type"] == "handoff_result" for item in artifacts))
 
     def test_runtime_recovers_interrupted_runs_and_reopens_task(self) -> None:
@@ -1060,34 +1045,43 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(updated_run["status"], "interrupted")
         self.assertTrue(any(item["metadata"].get("outcome") == "interrupted" for item in artifacts))
 
-    def test_runtime_reopens_completed_task_with_nonterminal_accepted_handoff(self) -> None:
+    def test_runtime_code_route_runs_codex_in_ai_dev_workflow_repo(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
         task = runtime.service.create_task(
-            title="Parent closed too early",
-            intent="Should await downstream result",
+            title="Implement repo fix",
+            intent="Make a concrete code change",
             owner_agent=PERSONAL_AGENT_ID,
-            status="completed",
-            metadata={"route": {"primary_agent": "code", "delegation_target": "ai-dev-workflow"}},
+            metadata={"route": {"primary_agent": "code", "delegation_target": None, "reason": "repo work"}},
         )
-        runtime.service.create_handoff(
-            task_id=task["id"],
-            from_agent=PERSONAL_AGENT_ID,
-            to_agent="ai-dev-workflow",
-            reason="Need repo execution",
-            payload={"task_id": task["id"]},
-            metadata={"created_by_run_id": "run_old"},
-        )
-        handoff_id = next(iter(runtime.service.handoffs))
-        runtime.service.update_handoff_status(handoff_id, status="accepted", result_summary="Accepted downstream")
+        calls: list[list[str]] = []
 
-        runtime._reconcile_nonterminal_handoffs()
+        def fake_run(command, capture_output=True, text=True, check=True):
+            calls.append(command)
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "outcome": "complete",
+                        "summary": "Implemented the repo fix",
+                        "report_title": "Repo fix",
+                        "report_markdown": "# Done\n\nImplemented the repo fix.\n",
+                        "blocker_reason": "",
+                        "approval": {"kind": "", "risk_level": "high", "payload": {}},
+                        "actions": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
 
-        updated = runtime.service.get_task(task["id"])
-        self.assertEqual(updated["status"], "in_progress")
-        self.assertTrue(updated["metadata"]["awaiting_handoff_result"])
-        self.assertEqual(updated["metadata"]["awaiting_handoff_id"], handoff_id)
+        with patch("personal_agent.runtime.subprocess.run", side_effect=fake_run):
+            runtime.process_once()
+
+        self.assertTrue(calls)
+        self.assertIn("workspace-write", calls[0])
+        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(Path("/Users/sebas/ai-dev-workflow")))
 
     def test_runtime_resolve_preference_blocker_uses_memory_when_available(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
