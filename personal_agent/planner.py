@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .config import CODEX_ADD_DIRS
+from .config import CODEX_ADD_DIRS, CODEX_BIN
 
 
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
@@ -135,7 +135,7 @@ def _run_codex_plan(text: str, memory_context: list[dict[str, Any]]) -> dict[str
     with tempfile.NamedTemporaryFile(prefix="personal-agent-plan-", suffix=".json", delete=False) as handle:
         output_path = Path(handle.name)
     command = [
-        "codex",
+        CODEX_BIN,
         "exec",
         "--sandbox",
         "read-only",

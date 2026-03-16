@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import CODEX_ADD_DIRS
+from .config import CODEX_ADD_DIRS, CODEX_BIN
 from .planner import build_intake_plan
 from .shared_memory import get_memory_service
 
@@ -315,7 +315,7 @@ class PersonalAgentRuntime:
             output_path = Path(handle.name)
         prompt = self._task_execution_prompt(task)
         command = [
-            "codex",
+            CODEX_BIN,
             "exec",
             "--sandbox",
             "read-only",

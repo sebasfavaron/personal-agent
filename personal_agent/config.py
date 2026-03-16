@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 
 
@@ -25,3 +26,4 @@ CODEX_ADD_DIRS = tuple(
     for part in os.environ.get("PERSONAL_AGENT_CODEX_ADD_DIRS", str(SHARED_MEMORY_ROOT)).split(os.pathsep)
     if part.strip()
 )
+CODEX_BIN = os.environ.get("PERSONAL_AGENT_CODEX_BIN") or shutil.which("codex") or "codex"
