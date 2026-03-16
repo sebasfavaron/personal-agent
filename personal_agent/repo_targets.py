@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
-WORKSPACE_ROOT = PERSONAL_ROOT.parent
+WORKSPACE_ROOT = PERSONAL_ROOT.parent / "Code" if (PERSONAL_ROOT.parent / "Code").exists() else PERSONAL_ROOT.parent
 
 
 def repo_catalog() -> dict[str, dict[str, object]]:
@@ -37,6 +37,15 @@ def repo_catalog() -> dict[str, dict[str, object]]:
             "aliases": (
                 "ballbox-company-agent",
                 "ballbox company agent",
+            ),
+        },
+        "repo_calistenia": {
+            "id": "repo_calistenia",
+            "name": "calistenia",
+            "path": str(WORKSPACE_ROOT / "calistenia"),
+            "aliases": (
+                "calistenia",
+                "/users/sebas/code/calistenia",
             ),
         },
     }
