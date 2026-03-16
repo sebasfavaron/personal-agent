@@ -54,6 +54,8 @@ HTML_PAGE = """<!doctype html>
       .pill.not_started { border-color: var(--muted); color: var(--muted); }
       a { color: var(--info); text-decoration: none; }
       a:hover { text-decoration: underline; }
+      .toolbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+      .toolbar button { background: var(--info); }
       .artifact-link { display: inline-block; max-width: 100%; }
       .artifact-page { max-width: 980px; margin: 0 auto; padding: 24px; }
       .artifact-body { white-space: pre-wrap; overflow-wrap: anywhere; background: white; border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
@@ -66,6 +68,10 @@ HTML_PAGE = """<!doctype html>
     <header>
       <h1>personal-agent / v1</h1>
       <p>Front door, event worker, blocker inbox, shared-memory orchestration.</p>
+      <div class="toolbar">
+        <button id="refresh-status" type="button">Refresh</button>
+        <span id="refresh-state" class="muted">Manual refresh</span>
+      </div>
       <p id="summary" class="muted"></p>
     </header>
     <main>
@@ -113,6 +119,7 @@ HTML_PAGE = """<!doctype html>
         return 'not started';
       }
       async function loadStatus() {
+        document.getElementById('refresh-state').textContent = 'Refreshing...';
         const response = await fetch('/api/status');
         const payload = await response.json();
         renderList('active', payload.active_tasks, task => `
@@ -152,6 +159,7 @@ HTML_PAGE = """<!doctype html>
           <strong>${escapeHtml(payload.summary.started_task_count)}</strong> started /
           <strong>${escapeHtml(payload.summary.queued_task_count)}</strong> not started
         `;
+        document.getElementById('refresh-state').textContent = `Updated ${new Date().toLocaleTimeString()}`;
       }
       function renderList(id, items, template) {
         const target = document.getElementById(id);
@@ -259,8 +267,10 @@ HTML_PAGE = """<!doctype html>
         document.getElementById('intake-input').value = '';
         await loadStatus();
       });
+      document.getElementById('refresh-status').addEventListener('click', async () => {
+        await loadStatus();
+      });
       loadStatus();
-      setInterval(loadStatus, 5000);
     </script>
   </body>
 </html>

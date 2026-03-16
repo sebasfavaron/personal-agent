@@ -30,3 +30,4 @@ Owner-managed repo. Work style: telegraph; min tokens.
 ## Before Handoff
 - run repo checks
 - call out missing integrations plainly
+- after changes to `personal_agent/daemon.py` or daemon-served routing/runtime code, restart `8082` before UI smoke tests; otherwise the dashboard may still serve stale behavior
