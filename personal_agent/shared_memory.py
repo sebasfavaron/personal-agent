@@ -47,7 +47,8 @@ def shared_memory_status() -> dict[str, Any]:
 
 
 def _shared_memory_exact_match(query: str) -> dict[str, Any] | None:
-    if not re.fullmatch(r"[a-z]+_[0-9a-f]{32}|mem_[a-z0-9_]+", query.strip().lower()):
+    normalized = query.strip().lower()
+    if not normalized or not re.fullmatch(r"^[a-z0-9_\-:]+$", normalized):
         return None
     if not SHARED_MEMORY_DB_PATH.exists():
         return None

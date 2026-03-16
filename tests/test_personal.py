@@ -700,6 +700,79 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["memory"]["id"], "mem_9b17b22a4644424d9bedb093ee71ff7f")
         self.assertEqual(payload["results"][0]["explanation"], "Exact memory id match")
 
+    def test_search_shared_memory_allows_exact_legacy_run_id_match(self) -> None:
+        from personal_agent.shared_memory import search_shared_memory
+
+        shared_db = Path(self.tmp.name) / "shared-agent-memory.sqlite3"
+        with sqlite3.connect(shared_db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE memories (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    project_id TEXT,
+                    repo_id TEXT,
+                    agent_id TEXT,
+                    source_kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    freshness REAL NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    source_ref TEXT,
+                    evidence_ref TEXT,
+                    embedding_json TEXT,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO memories (
+                    id, type, scope, status, project_id, repo_id, agent_id, source_kind,
+                    title, content, summary, confidence, freshness, created_at, updated_at,
+                    observed_at, source_ref, evidence_ref, embedding_json, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy_run_run-123",
+                    "episode",
+                    "global",
+                    "active",
+                    None,
+                    None,
+                    None,
+                    "run",
+                    "Legacy run",
+                    "Goal: Shared-only run",
+                    "Stored in shared DB only.",
+                    0.8,
+                    0.8,
+                    "2026-03-14T00:00:00+00:00",
+                    "2026-03-14T00:00:00+00:00",
+                    "2026-03-14T00:00:00+00:00",
+                    "personal-agent:run:run-123",
+                    "personal-agent:run:run-123",
+                    None,
+                    json.dumps({"legacy_kind": "research_run", "legacy_run_id": "run-123", "run_status": "completed"}),
+                ),
+            )
+
+        fake_service = FakeMemoryService(str(shared_db))
+
+        with patch("personal_agent.shared_memory.get_memory_service", return_value=fake_service), patch(
+            "personal_agent.shared_memory.SHARED_MEMORY_DB_PATH", shared_db
+        ):
+            payload = search_shared_memory("legacy_run_run-123")
+
+        self.assertEqual(payload["results"][0]["memory"]["id"], "legacy_run_run-123")
+        self.assertEqual(payload["results"][0]["explanation"], "Exact memory id match")
+
     def test_router_routes_company_and_code_requests(self) -> None:
         from personal_agent.router import route_request
 
