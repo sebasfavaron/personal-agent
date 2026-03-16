@@ -7,7 +7,7 @@
 - `personal-agent`
   - daemon
   - event worker
-  - dashboard at `127.0.0.1:6666`
+  - dashboard at `127.0.0.1:8082`
   - intake, blockers, orchestration
 - `agents-database`
   - canonical shared state
@@ -26,12 +26,12 @@
 
 ## Critical Paths
 
-- `~/Code/personal-agent`
-- `~/Code/agents-database`
-- `~/Code/ballbox-company-agent`
-- `~/Code/ai-dev-workflow`
-- `~/Code/agents-database/data/shared-agent-memory.sqlite3`
-- `~/Code/ai-dev-workflow/.agents/local-config.json`
+- `~/personal-agent`
+- `~/agents-database`
+- `~/ballbox-company-agent`
+- `~/ai-dev-workflow`
+- `~/agents-database/data/shared-agent-memory.sqlite3`
+- `~/ai-dev-workflow/.agents/local-config.json`
 - `~/.codex/skills`
 
 ## What Lives Where
@@ -46,14 +46,14 @@
 ### Durable local state
 
 - shared durable memory and operational task state:
-  - `~/Code/agents-database/data/shared-agent-memory.sqlite3`
+  - `~/agents-database/data/shared-agent-memory.sqlite3`
 
 ### Local config / machine-specific state
 
 - repo path mapping for code workflows:
-  - `~/Code/ai-dev-workflow/.agents/local-config.json`
+  - `~/ai-dev-workflow/.agents/local-config.json`
 - active feature contexts, when present:
-  - `~/Code/ai-dev-workflow/.agents/feature-contexts/`
+  - `~/ai-dev-workflow/.agents/feature-contexts/`
 - Codex skill symlinks:
   - `~/.codex/skills`
 - Codex writable-extra-dir convention for `personal-agent`:
@@ -62,7 +62,7 @@
 ### Legacy transitional state
 
 - pre-V1 personal-agent sqlite:
-  - `~/Code/personal-agent/data/personal-agent.sqlite3`
+  - `~/personal-agent/data/personal-agent.sqlite3`
 
 Keep only for migration and audit while V1 stabilizes.
 
@@ -79,30 +79,37 @@ Transition behavior:
    - Git
    - Codex CLI
    - GitHub CLI if using `ai-dev-workflow`
-2. Recreate sibling layout under `~/Code`.
+2. Recreate sibling layout under `~`.
    - clone `personal-agent`
    - clone `agents-database`
    - clone `ballbox-company-agent`
    - clone `ai-dev-workflow`
 3. Restore durable state.
-   - copy `shared-agent-memory.sqlite3` into `~/Code/agents-database/data/`
+   - copy `shared-agent-memory.sqlite3` into `~/agents-database/data/`
 4. Restore local config.
-   - copy `~/Code/ai-dev-workflow/.agents/local-config.json`
+   - copy `~/ai-dev-workflow/.agents/local-config.json`
    - copy any active `feature-contexts/` if needed
 5. Reinstall skills.
-   - run `~/Code/personal-agent/scripts/install-skills.sh`
+   - run `~/personal-agent/scripts/install-skills.sh`
 6. Verify shared memory import path.
-   - `python3 ~/Code/personal-agent/scripts/personal.py status --json`
+   - `python3 ~/personal-agent/scripts/personal.py status --json`
 7. Start the daemon.
-   - `python3 ~/Code/personal-agent/scripts/personal.py daemon`
+   - `python3 ~/personal-agent/scripts/personal.py daemon`
 8. Open the dashboard.
-   - `http://127.0.0.1:6666`
+   - `http://127.0.0.1:8082`
+
+Operator note:
+
+- daemon is long-running
+- this agent can start, stop, or restart it across sessions
+- canonical UI endpoint: `http://127.0.0.1:8082/`
+- canonical status endpoint: `http://127.0.0.1:8082/api/status`
 
 ## Validation Checklist
 
 - `personal-agent` status command returns dashboard JSON
 - `personal.py` accepts `--json` before or after subcommands
-- dashboard loads at `:6666`
+- dashboard loads at `:8082`
 - shared DB contains tasks, runs, artifacts, handoffs
 - `ai-dev-workflow` `run-task` returns accepted JSON
 - `ballbox-company-agent` `run-task` returns accepted JSON
@@ -113,8 +120,8 @@ Transition behavior:
 Minimum backup set:
 
 - all four git repos
-- `~/Code/agents-database/data/shared-agent-memory.sqlite3`
-- `~/Code/ai-dev-workflow/.agents/local-config.json`
+- `~/agents-database/data/shared-agent-memory.sqlite3`
+- `~/ai-dev-workflow/.agents/local-config.json`
 - active `feature-contexts/` if they matter
 - optional legacy `personal-agent/data/personal-agent.sqlite3`
 

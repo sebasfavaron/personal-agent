@@ -19,7 +19,7 @@ See [INSTALL.md](INSTALL.md) for setup.
 
 `personal-agent` now grows toward a front-door runtime:
 
-- daemon + dashboard at `127.0.0.1:6666`
+- daemon + dashboard at `127.0.0.1:8082`
 - shared-memory orchestration over `agents-database`
 - Codex-backed intake planner with heuristic fallback
 - event worker using `codex exec` for structured task decisions, blockers, and approval requests
@@ -60,7 +60,7 @@ Durable shared memory lives in the sibling project at `~/agents-database`.
 Default shared-memory path discovery:
 
 - tries `~/agents-database/src` first
-- then falls back to `~/Code/agents-database/src`
+- then falls back to sibling discovery heuristics if the direct path is unavailable
 - database defaults to `<shared-memory-root>/data/shared-agent-memory.sqlite3`
 - when launching Codex from `personal-agent`, add `--add-dir ~/agents-database` so sandboxed Codex runs can write the canonical DB in place
 
@@ -121,6 +121,13 @@ python3 scripts/personal.py tasks next
 python3 scripts/personal.py leisure add --title "Severance" --media-type series
 python3 scripts/personal.py leisure list --media-type series
 ```
+
+## Operator Note
+
+- daemon is long-running
+- this agent can start, stop, or restart it across sessions
+- canonical UI endpoint: `http://127.0.0.1:8082/`
+- canonical status JSON endpoint: `http://127.0.0.1:8082/api/status`
 
 ## Intended Usage Model
 

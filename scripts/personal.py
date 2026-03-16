@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--host", default="127.0.0.1")
-    daemon.add_argument("--port", type=int, default=6666)
+    daemon.add_argument("--port", type=int, default=8082)
     daemon.add_argument("--interval-seconds", type=float, default=5.0)
 
     intake = subparsers.add_parser("intake")

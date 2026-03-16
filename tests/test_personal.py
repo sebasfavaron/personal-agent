@@ -302,7 +302,7 @@ class PersonalAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["PERSONAL_AGENT_DATA_DIR"] = self.tmp.name
-        os.environ["PERSONAL_AGENT_SHARED_MEMORY_ROOT"] = "/Users/sebas/agents-database"
+        os.environ["PERSONAL_AGENT_SHARED_MEMORY_ROOT"] = str(Path("~/agents-database").expanduser())
         os.environ["PERSONAL_AGENT_SHARED_MEMORY_DB_PATH"] = str(Path(self.tmp.name) / "shared-agent-memory.sqlite3")
 
         from personal_agent import config
@@ -311,7 +311,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         config.DATA_DIR = Path(self.tmp.name)
         config.DB_PATH = config.DATA_DIR / "test.sqlite3"
-        config.SHARED_MEMORY_ROOT = Path("/Users/sebas/agents-database")
+        config.SHARED_MEMORY_ROOT = Path("~/agents-database").expanduser()
         config.SHARED_MEMORY_SRC_DIR = config.SHARED_MEMORY_ROOT / "src"
         config.SHARED_MEMORY_DB_PATH = Path(self.tmp.name) / "shared-agent-memory.sqlite3"
         db.DATA_DIR = config.DATA_DIR
@@ -1210,7 +1210,7 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn("-C", codex_commands[0])
         self.assertIn("--add-dir", codex_commands[0])
         add_dir_value = codex_commands[0][codex_commands[0].index("--add-dir") + 1]
-        self.assertEqual(add_dir_value, "/Users/sebas/agents-database")
+        self.assertEqual(add_dir_value, str(Path("~/agents-database").expanduser()))
 
 
 if __name__ == "__main__":

@@ -265,7 +265,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def run_server(host: str = "127.0.0.1", port: int = 6666, interval_seconds: float = 5.0) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8082, interval_seconds: float = 5.0) -> None:
     runtime = PersonalAgentRuntime()
     worker = threading.Thread(target=runtime.serve_forever, kwargs={"interval_seconds": interval_seconds}, daemon=True)
     worker.start()
