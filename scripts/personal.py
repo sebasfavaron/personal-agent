@@ -205,8 +205,8 @@ def main() -> int:
         as_json = True
         raw_argv = [arg for arg in raw_argv if arg != "--json"]
     args = parser.parse_args((["--json"] if as_json else []) + raw_argv)
-    legacy_commands = {"research", "report", "memory-search", "memory-migrate", "route", "approvals", "tasks", "leisure"}
-    if args.command in legacy_commands:
+    legacy_commands = {"research", "report", "memory-search", "memory-migrate", "route", "tasks", "leisure"}
+    if args.command in legacy_commands or (args.command == "approvals" and args.approvals_command in {"list", "request"}):
         ensure_db()
 
     if args.command == "research":
@@ -256,7 +256,11 @@ def main() -> int:
 
     runtime = None
     if args.command in {"intake", "status", "worker", "blocker"}:
-        runtime = PersonalAgentRuntime()
+        try:
+            runtime = PersonalAgentRuntime()
+        except RuntimeError as exc:
+            print(f"runtime init failed: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "intake":
         result = runtime.intake(args.input, origin=args.origin)
@@ -299,7 +303,11 @@ def main() -> int:
             _print(request_approval(args.kind, payload, args.risk_level), args.as_json)
             return 0
         if args.approvals_command == "resolve":
-            runtime = PersonalAgentRuntime()
+            try:
+                runtime = PersonalAgentRuntime()
+            except RuntimeError as exc:
+                print(f"runtime init failed: {exc}", file=sys.stderr)
+                return 1
             _print(runtime.resolve_approval(args.approval_id, args.status, args.note), args.as_json)
             return 0
 

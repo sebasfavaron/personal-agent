@@ -334,17 +334,42 @@ class FakeOperationalMemoryService(FakeMemoryService):
 class PersonalAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
+        self.agents_db_dir = Path(self.tmp.name) / "agents-database"
+        self.agents_db_dir.mkdir()
+        self._original_config = {}
+        self._original_db = {}
+        self._original_shared_memory = {}
+        self._original_env = {
+            "PERSONAL_AGENT_DATA_DIR": os.environ.get("PERSONAL_AGENT_DATA_DIR"),
+            "PERSONAL_AGENT_SHARED_MEMORY_ROOT": os.environ.get("PERSONAL_AGENT_SHARED_MEMORY_ROOT"),
+            "PERSONAL_AGENT_SHARED_MEMORY_DB_PATH": os.environ.get("PERSONAL_AGENT_SHARED_MEMORY_DB_PATH"),
+        }
         os.environ["PERSONAL_AGENT_DATA_DIR"] = self.tmp.name
-        os.environ["PERSONAL_AGENT_SHARED_MEMORY_ROOT"] = str(Path("~/agents-database").expanduser())
+        os.environ["PERSONAL_AGENT_SHARED_MEMORY_ROOT"] = str(self.agents_db_dir)
         os.environ["PERSONAL_AGENT_SHARED_MEMORY_DB_PATH"] = str(Path(self.tmp.name) / "shared-agent-memory.sqlite3")
 
         from personal_agent import config
         from personal_agent import db
         from personal_agent import shared_memory
 
+        self._original_config = {
+            "DATA_DIR": config.DATA_DIR,
+            "DB_PATH": config.DB_PATH,
+            "SHARED_MEMORY_ROOT": config.SHARED_MEMORY_ROOT,
+            "SHARED_MEMORY_SRC_DIR": config.SHARED_MEMORY_SRC_DIR,
+            "SHARED_MEMORY_DB_PATH": config.SHARED_MEMORY_DB_PATH,
+        }
+        self._original_db = {
+            "DATA_DIR": db.DATA_DIR,
+            "DB_PATH": db.DB_PATH,
+        }
+        self._original_shared_memory = {
+            "SHARED_MEMORY_SRC_DIR": shared_memory.SHARED_MEMORY_SRC_DIR,
+            "SHARED_MEMORY_DB_PATH": shared_memory.SHARED_MEMORY_DB_PATH,
+        }
         config.DATA_DIR = Path(self.tmp.name)
         config.DB_PATH = config.DATA_DIR / "test.sqlite3"
-        config.SHARED_MEMORY_ROOT = Path("~/agents-database").expanduser()
+        config.SHARED_MEMORY_ROOT = self.agents_db_dir
         config.SHARED_MEMORY_SRC_DIR = config.SHARED_MEMORY_ROOT / "src"
         config.SHARED_MEMORY_DB_PATH = Path(self.tmp.name) / "shared-agent-memory.sqlite3"
         db.DATA_DIR = config.DATA_DIR
@@ -358,11 +383,26 @@ class PersonalAgentTests(unittest.TestCase):
         self.runtime_memory_patcher.start()
 
     def tearDown(self) -> None:
+        from personal_agent import config
+        from personal_agent import db
+        from personal_agent import shared_memory
+
         self.runtime_memory_patcher.stop()
+        config.DATA_DIR = self._original_config["DATA_DIR"]
+        config.DB_PATH = self._original_config["DB_PATH"]
+        config.SHARED_MEMORY_ROOT = self._original_config["SHARED_MEMORY_ROOT"]
+        config.SHARED_MEMORY_SRC_DIR = self._original_config["SHARED_MEMORY_SRC_DIR"]
+        config.SHARED_MEMORY_DB_PATH = self._original_config["SHARED_MEMORY_DB_PATH"]
+        db.DATA_DIR = self._original_db["DATA_DIR"]
+        db.DB_PATH = self._original_db["DB_PATH"]
+        shared_memory.SHARED_MEMORY_SRC_DIR = self._original_shared_memory["SHARED_MEMORY_SRC_DIR"]
+        shared_memory.SHARED_MEMORY_DB_PATH = self._original_shared_memory["SHARED_MEMORY_DB_PATH"]
         self.tmp.cleanup()
-        os.environ.pop("PERSONAL_AGENT_DATA_DIR", None)
-        os.environ.pop("PERSONAL_AGENT_SHARED_MEMORY_ROOT", None)
-        os.environ.pop("PERSONAL_AGENT_SHARED_MEMORY_DB_PATH", None)
+        for key, value in self._original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_research_lifecycle_and_search(self) -> None:
         from personal_agent.research_store import (
@@ -1239,7 +1279,7 @@ class PersonalAgentTests(unittest.TestCase):
             handler.send_response = lambda status: setattr(handler, "_status", int(status))
             handler.send_header = lambda *args, **kwargs: None
             handler.end_headers = lambda: None
-            handler.send_error = lambda status: setattr(handler, "_error", int(status))
+            handler.send_error = lambda status, *_args: setattr(handler, "_error", int(status))
             getattr(handler, method)()
             if handler._error is not None:
                 return handler._error, {}
@@ -1281,6 +1321,24 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(blocker_payload["task"]["status"], "open")
 
+        bad_json_handler = PersonalAgentHandler.__new__(PersonalAgentHandler)
+        bad_json_handler.server = server
+        bad_json_handler.path = "/api/intake"
+        bad_json_handler.headers = {"Content-Length": "1"}
+        bad_json_handler.rfile = BytesIO(b"[")
+        bad_json_handler.wfile = BytesIO()
+        bad_json_handler._error = None
+        bad_json_handler.send_response = lambda status: None
+        bad_json_handler.send_header = lambda *args, **kwargs: None
+        bad_json_handler.end_headers = lambda: None
+        bad_json_handler.send_error = lambda status, *_args: setattr(bad_json_handler, "_error", int(status))
+        bad_json_handler.do_POST()
+        self.assertEqual(bad_json_handler._error, 400)
+
+        status_code, invalid_payload = invoke("do_POST", "/api/intake", {"wrong": "shape"})
+        self.assertEqual(status_code, 400)
+        self.assertEqual(invalid_payload, {})
+
         approval = runtime.service.create_approval(
             task_id=task_id,
             kind="outreach",
@@ -1321,7 +1379,7 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(status_code, 404)
 
     def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
-        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+        from personal_agent.runtime import CODEX_ADD_DIRS, PERSONAL_AGENT_ID, PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
         task = runtime.service.create_task(
@@ -1370,7 +1428,7 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn("-C", codex_commands[0])
         self.assertIn("--add-dir", codex_commands[0])
         add_dir_value = codex_commands[0][codex_commands[0].index("--add-dir") + 1]
-        self.assertEqual(add_dir_value, str(Path("~/agents-database").expanduser()))
+        self.assertEqual(add_dir_value, str(CODEX_ADD_DIRS[0]))
 
 
 if __name__ == "__main__":

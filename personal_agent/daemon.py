@@ -96,6 +96,17 @@ HTML_PAGE = """<!doctype html>
       </section>
     </main>
     <script>
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+      function stateClass(value) {
+        return ['running', 'ran_before', 'not_started'].includes(value) ? value : 'not_started';
+      }
       function taskStateLabel(task) {
         if (task.execution_state === 'running') return 'running now';
         if (task.execution_state === 'ran_before') return 'ran before';
@@ -106,40 +117,40 @@ HTML_PAGE = """<!doctype html>
         const payload = await response.json();
         renderList('active', payload.active_tasks, task => `
           <li>
-            <a class="artifact-link" href="/tasks/${task.id}" target="_blank" rel="noreferrer"><strong>${task.title}</strong></a>
-            <div class="task-id">${task.id}</div>
-            <div class="pill ${task.execution_state}">${taskStateLabel(task)}</div>
-            <div class="meta">${task.status} / next: ${task.next_action}</div>
-            <div class="meta">route: ${task.route_summary.primary_agent}${task.route_summary.planning_source ? ` / ${task.route_summary.planning_source}` : ''}</div>
-            <div class="meta">subtasks: ${task.open_subtask_count}${task.latest_run ? ` / run: ${task.latest_run.status} / started: ${task.last_run_started_at}` : ''}</div>
+            <a class="artifact-link" href="/tasks/${encodeURIComponent(task.id)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(task.title)}</strong></a>
+            <div class="task-id">${escapeHtml(task.id)}</div>
+            <div class="pill ${stateClass(task.execution_state)}">${escapeHtml(taskStateLabel(task))}</div>
+            <div class="meta">${escapeHtml(task.status)} / next: ${escapeHtml(task.next_action)}</div>
+            <div class="meta">route: ${escapeHtml(task.route_summary.primary_agent)}${task.route_summary.planning_source ? ` / ${escapeHtml(task.route_summary.planning_source)}` : ''}</div>
+            <div class="meta">subtasks: ${escapeHtml(task.open_subtask_count)}${task.latest_run ? ` / run: ${escapeHtml(task.latest_run.status)} / started: ${escapeHtml(task.last_run_started_at)}` : ''}</div>
           </li>
         `);
         renderCurrentRun(payload.current_run);
         renderBlocked(payload.blocked_tasks);
         renderList('deliverables', payload.recent_deliverables || [], artifact => `
           <li>
-            <a class="artifact-link" href="/artifacts/${artifact.id}" target="_blank" rel="noreferrer"><strong>${artifact.title}</strong></a>
-            <div class="task-id">${artifact.task_title}</div>
-            <div class="meta">${artifact.task_id} / ${artifact.task_status}</div>
+            <a class="artifact-link" href="/artifacts/${encodeURIComponent(artifact.id)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(artifact.title)}</strong></a>
+            <div class="task-id">${escapeHtml(artifact.task_title)}</div>
+            <div class="meta">${escapeHtml(artifact.task_id)} / ${escapeHtml(artifact.task_status)}</div>
           </li>
         `);
-        renderList('handoffs', payload.pending_handoffs, handoff => `<li><strong>${handoff.to_agent}</strong><div class="task-id">${handoff.task_id}</div><div class="meta">${handoff.status} / ${handoff.reason}</div></li>`);
+        renderList('handoffs', payload.pending_handoffs, handoff => `<li><strong>${escapeHtml(handoff.to_agent)}</strong><div class="task-id">${escapeHtml(handoff.task_id)}</div><div class="meta">${escapeHtml(handoff.status)} / ${escapeHtml(handoff.reason)}</div></li>`);
         renderApprovals(payload.pending_approvals);
         renderList('artifacts', payload.recent_artifacts.slice(0, 8), artifact => `
           <li>
-            <a class="artifact-link" href="/artifacts/${artifact.id}" target="_blank" rel="noreferrer"><strong>${artifact.title}</strong></a>
-            <div class="task-id">${artifact.task_id}</div>
-            <div class="meta">${artifact.artifact_type}${artifact.metadata?.classification ? ` / ${artifact.metadata.classification}` : ''}</div>
+            <a class="artifact-link" href="/artifacts/${encodeURIComponent(artifact.id)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(artifact.title)}</strong></a>
+            <div class="task-id">${escapeHtml(artifact.task_id)}</div>
+            <div class="meta">${escapeHtml(artifact.artifact_type)}${artifact.metadata?.classification ? ` / ${escapeHtml(artifact.metadata.classification)}` : ''}</div>
           </li>
         `);
         document.getElementById('summary').innerHTML = `
-          <strong>${payload.summary.active_task_count}</strong> active /
-          <strong>${payload.summary.blocked_task_count}</strong> blocked /
-          <strong>${payload.summary.pending_approval_count}</strong> approvals /
-          <strong>${payload.summary.pending_handoff_count}</strong> handoffs /
-          <strong>${payload.summary.running_task_count}</strong> running /
-          <strong>${payload.summary.started_task_count}</strong> started /
-          <strong>${payload.summary.queued_task_count}</strong> not started
+          <strong>${escapeHtml(payload.summary.active_task_count)}</strong> active /
+          <strong>${escapeHtml(payload.summary.blocked_task_count)}</strong> blocked /
+          <strong>${escapeHtml(payload.summary.pending_approval_count)}</strong> approvals /
+          <strong>${escapeHtml(payload.summary.pending_handoff_count)}</strong> handoffs /
+          <strong>${escapeHtml(payload.summary.running_task_count)}</strong> running /
+          <strong>${escapeHtml(payload.summary.started_task_count)}</strong> started /
+          <strong>${escapeHtml(payload.summary.queued_task_count)}</strong> not started
         `;
       }
       function renderList(id, items, template) {
@@ -157,12 +168,12 @@ HTML_PAGE = """<!doctype html>
           return;
         }
         target.innerHTML = `
-          <p><a class="artifact-link" href="/tasks/${item.task_id}" target="_blank" rel="noreferrer"><strong>${item.task_title}</strong></a></p>
-          <div class="task-id">${item.task_id}</div>
-          <div class="meta">task: ${item.task_status} / run: ${item.run_status}</div>
-          <div class="meta">started: ${item.started_at}</div>
-          <div class="meta">next: ${item.next_action}</div>
-          <div class="meta">open subtasks: ${item.open_subtask_count}</div>
+          <p><a class="artifact-link" href="/tasks/${encodeURIComponent(item.task_id)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(item.task_title)}</strong></a></p>
+          <div class="task-id">${escapeHtml(item.task_id)}</div>
+          <div class="meta">task: ${escapeHtml(item.task_status)} / run: ${escapeHtml(item.run_status)}</div>
+          <div class="meta">started: ${escapeHtml(item.started_at)}</div>
+          <div class="meta">next: ${escapeHtml(item.next_action)}</div>
+          <div class="meta">open subtasks: ${escapeHtml(item.open_subtask_count)}</div>
         `;
       }
       function renderBlocked(items) {
@@ -173,12 +184,12 @@ HTML_PAGE = """<!doctype html>
         }
         target.innerHTML = items.map(task => `
           <div style="margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line);">
-            <a class="artifact-link" href="/tasks/${task.id}" target="_blank" rel="noreferrer"><strong>${task.title}</strong></a>
-            <div class="task-id">${task.id}</div>
-            <div class="pill ${task.execution_state}">${taskStateLabel(task)}</div>
-            <p class="warn">${task.blocked_reason || 'Blocked'}</p>
-            <div class="meta">next: ${task.next_action}${task.latest_run ? ` / run: ${task.latest_run.status} / started: ${task.last_run_started_at}` : ''}</div>
-            <form data-task-id="${task.id}" class="blocker-form">
+            <a class="artifact-link" href="/tasks/${encodeURIComponent(task.id)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(task.title)}</strong></a>
+            <div class="task-id">${escapeHtml(task.id)}</div>
+            <div class="pill ${stateClass(task.execution_state)}">${escapeHtml(taskStateLabel(task))}</div>
+            <p class="warn">${escapeHtml(task.blocked_reason || 'Blocked')}</p>
+            <div class="meta">next: ${escapeHtml(task.next_action)}${task.latest_run ? ` / run: ${escapeHtml(task.latest_run.status)} / started: ${escapeHtml(task.last_run_started_at)}` : ''}</div>
+            <form data-task-id="${escapeHtml(task.id)}" class="blocker-form">
               <textarea rows="3" placeholder="Add the missing context to continue"></textarea>
               <button type="submit">Resolve blocker</button>
             </form>
@@ -206,14 +217,14 @@ HTML_PAGE = """<!doctype html>
         }
         target.innerHTML = items.map(approval => `
           <div style="margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line);">
-            <strong>${approval.kind}</strong>
-            <div class="task-id">${approval.id}</div>
-            <div class="meta">${approval.task_id} / ${approval.risk_level}</div>
-            <form data-approval-id="${approval.id}" data-status="approved" class="approval-form">
+            <strong>${escapeHtml(approval.kind)}</strong>
+            <div class="task-id">${escapeHtml(approval.id)}</div>
+            <div class="meta">${escapeHtml(approval.task_id)} / ${escapeHtml(approval.risk_level)}</div>
+            <form data-approval-id="${escapeHtml(approval.id)}" data-status="approved" class="approval-form">
               <textarea rows="2" placeholder="Optional approval note"></textarea>
               <button type="submit">Approve + resume</button>
             </form>
-            <form data-approval-id="${approval.id}" data-status="rejected" class="approval-form" style="margin-top: 8px;">
+            <form data-approval-id="${escapeHtml(approval.id)}" data-status="rejected" class="approval-form" style="margin-top: 8px;">
               <textarea rows="2" placeholder="Reason for rejection"></textarea>
               <button type="submit" style="background: var(--warn);">Reject</button>
             </form>
@@ -294,9 +305,21 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        payload = self._json_body()
+        try:
+            payload = self._json_body()
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            self.send_error(HTTPStatus.BAD_REQUEST, "Invalid JSON body")
+            return
         if parsed.path == "/api/intake":
-            result = self.server.runtime.intake(payload["input"])
+            input_text = payload.get("input")
+            if not isinstance(input_text, str) or not input_text.strip():
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing or invalid 'input'")
+                return
+            try:
+                result = self.server.runtime.intake(input_text)
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
+                return
             self._send_json(
                 {
                     "task": result.task,
@@ -309,21 +332,48 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/api/tasks/") and parsed.path.endswith("/blocker-response"):
             task_id = parsed.path.split("/")[3]
-            self._send_json(self.server.runtime.respond_to_blocker(task_id, payload["response"]))
+            response_text = payload.get("response")
+            if not isinstance(response_text, str) or not response_text.strip():
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing or invalid 'response'")
+                return
+            try:
+                self._send_json(self.server.runtime.respond_to_blocker(task_id, response_text))
+            except KeyError:
+                self.send_error(HTTPStatus.NOT_FOUND, f"Task not found: {task_id}")
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
         if parsed.path.startswith("/api/approvals/") and parsed.path.endswith("/resolve"):
             approval_id = parsed.path.split("/")[3]
-            self._send_json(self.server.runtime.resolve_approval(approval_id, payload["status"], payload.get("note", "")))
+            status = payload.get("status")
+            note = payload.get("note", "")
+            if not isinstance(status, str) or status.strip().lower() not in {"approved", "rejected"}:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Missing or invalid 'status'")
+                return
+            if note is None:
+                note = ""
+            if not isinstance(note, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid 'note'")
+                return
+            try:
+                self._send_json(self.server.runtime.resolve_approval(approval_id, status, note))
+            except KeyError:
+                self.send_error(HTTPStatus.NOT_FOUND, f"Approval not found: {approval_id}")
+            except ValueError as exc:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+    def log_message(self, fmt: str, *args: Any) -> None:
         return
 
     def _json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length else b"{}"
-        return json.loads(raw.decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("JSON body must be an object")
+        return payload
 
     def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
