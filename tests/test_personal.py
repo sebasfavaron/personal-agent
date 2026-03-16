@@ -507,6 +507,81 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn(b"200", start_handler.wfile.getvalue().splitlines()[0])
         self.assertIn(b"200", status_handler.wfile.getvalue().splitlines()[0])
 
+    def test_daemon_renders_markdown_links_in_artifacts(self) -> None:
+        from personal_agent.daemon import PersonalAgentHandler
+
+        handler = PersonalAgentHandler.__new__(PersonalAgentHandler)
+        rendered = handler._render_markdown(
+            "Abrir [USECASE.md](http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89) y `code`."
+        )
+        self.assertIn(
+            '<a href="http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89" target="_blank" rel="noreferrer">USECASE.md</a>',
+            rendered,
+        )
+        self.assertIn("<code>code</code>", rendered)
+
+        page = handler._artifact_page(
+            {
+                "id": "art-1",
+                "task_id": "task-1",
+                "artifact_type": "report",
+                "title": "Rendered artifact",
+                "content": '[safe](javascript:alert(1)) [ok](http://127.0.0.1:8082/artifacts/art-1)',
+            }
+        )
+        self.assertIn("[safe](javascript:alert(1))", page)
+        self.assertIn(
+            '<a href="http://127.0.0.1:8082/artifacts/art-1" target="_blank" rel="noreferrer">ok</a>',
+            page,
+        )
+
+    def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
+        from personal_agent.runtime import CODEX_ADD_DIRS, PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Probe codex command",
+            intent="Need to verify codex add-dir wiring",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="draft",
+            metadata={"execution": {"cwd": str(self._fake_repo_dir())}},
+        )
+        seen: list[list[str]] = []
+
+        class FakePopen:
+            def __init__(self, command, stdout, stderr, text):
+                del text
+                seen.append(command)
+                self.pid = 7777
+                output_path = Path(command[command.index("-o") + 1])
+                output_path.write_text("# Report\n\nAll good.\n", encoding="utf-8")
+                stdout.flush()
+                stderr.flush()
+                self._returncode = 0
+
+            def wait(self):
+                return self._returncode
+
+            def poll(self):
+                return self._returncode
+
+            def terminate(self):
+                self._returncode = -15
+
+        with patch("personal_agent.runtime.subprocess.Popen", FakePopen):
+            runtime.start_task(task["id"], self._fake_repo_dir())
+
+        codex_commands = [
+            command
+            for command in seen
+            if len(command) >= 2 and Path(command[0]).name == "codex" and command[1] == "exec"
+        ]
+        self.assertTrue(codex_commands)
+        self.assertIn("-C", codex_commands[0])
+        self.assertIn("--add-dir", codex_commands[0])
+        add_dir_value = codex_commands[0][codex_commands[0].index("--add-dir") + 1]
+        self.assertEqual(add_dir_value, str(CODEX_ADD_DIRS[0]))
+
 
 if __name__ == "__main__":
     unittest.main()

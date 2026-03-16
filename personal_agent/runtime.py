@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import BASE_DIR, CODEX_BIN
+from .config import BASE_DIR, CODEX_ADD_DIRS, CODEX_BIN
 from .repo_targets import default_code_repo, infer_target_repo, repo_catalog, repo_target_by_id
 from .shared_memory import get_memory_service
 
@@ -107,8 +107,10 @@ class PersonalAgentRuntime:
             str(final_cwd),
             "-o",
             str(output_path),
-            prompt,
         ]
+        for writable_dir in CODEX_ADD_DIRS:
+            command.extend(["--add-dir", str(writable_dir)])
+        command.append(prompt)
         process = subprocess.Popen(command, stdout=stdout_handle, stderr=stderr_handle, text=True)
         state = ProcessState(
             run_id=run["id"],
