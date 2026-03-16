@@ -995,12 +995,25 @@ class PersonalAgentTests(unittest.TestCase):
             requires_human_input=True,
             metadata={"route": {"primary_agent": "personal", "planning_source": "codex"}},
         )
+        queued = runtime.service.create_task(
+            title="Queued task",
+            intent="Not started yet",
+            owner_agent=PERSONAL_AGENT_ID,
+            metadata={"route": {"primary_agent": "personal", "planning_source": "codex"}},
+        )
         runtime.service.start_task_run(active["id"], PERSONAL_AGENT_ID, input_payload={"mode": "codex-agentic"})
         runtime.service.create_task(
             title="Child item",
             intent="Subtask",
             owner_agent=PERSONAL_AGENT_ID,
             parent_task_id=active["id"],
+        )
+        runtime.service.create_artifact(
+            task_id=active["id"],
+            artifact_type="report",
+            title="Delivered report",
+            content="Done.",
+            source_ref=PERSONAL_AGENT_ID,
         )
         approval = runtime.service.create_approval(
             task_id=blocked["id"],
@@ -1012,13 +1025,23 @@ class PersonalAgentTests(unittest.TestCase):
         payload = runtime.dashboard_snapshot()
 
         active_row = next(item for item in payload["active_tasks"] if item["id"] == active["id"])
+        queued_row = next(item for item in payload["active_tasks"] if item["id"] == queued["id"])
         blocked_row = next(item for item in payload["blocked_tasks"] if item["id"] == blocked["id"])
         self.assertEqual(payload["summary"]["pending_approval_count"], 1)
+        self.assertEqual(payload["summary"]["running_task_count"], 1)
+        self.assertEqual(payload["summary"]["started_task_count"], 1)
+        self.assertEqual(payload["summary"]["queued_task_count"], 1)
         self.assertEqual(active_row["next_action"], "Worker running")
         self.assertEqual(active_row["open_subtask_count"], 1)
+        self.assertEqual(active_row["execution_state"], "running")
+        self.assertTrue(active_row["has_started"])
         self.assertEqual(active_row["latest_run"]["status"], "running")
+        self.assertEqual(queued_row["execution_state"], "not_started")
+        self.assertFalse(queued_row["has_started"])
         self.assertEqual(blocked_row["pending_approval"]["id"], approval["id"])
         self.assertTrue(blocked_row["next_action"].startswith("Resolve approval"))
+        self.assertEqual(payload["recent_deliverables"][0]["title"], "Delivered report")
+        self.assertEqual(payload["recent_deliverables"][0]["task_title"], active["title"])
 
     def test_runtime_end_to_end_intake_approval_resume_complete(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime
@@ -1119,6 +1142,11 @@ class PersonalAgentTests(unittest.TestCase):
         status_code, intake_payload = invoke("do_POST", "/api/intake", {"input": "Handle a local task"})
         self.assertEqual(status_code, 201)
         task_id = intake_payload["task"]["id"]
+        artifact_id = intake_payload["artifacts"][0]["id"]
+
+        status_code, artifact_payload = invoke("do_GET", f"/api/artifacts/{artifact_id}")
+        self.assertEqual(status_code, 200)
+        self.assertEqual(artifact_payload["id"], artifact_id)
 
         runtime.service.update_task(task_id, status="blocked", blocked_reason="Need input", requires_human_input=True)
         status_code, blocker_payload = invoke("do_POST", f"/api/tasks/{task_id}/blocker-response", {"response": "Extra context"})

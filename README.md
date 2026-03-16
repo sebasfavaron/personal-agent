@@ -128,6 +128,12 @@ python3 scripts/personal.py leisure list --media-type series
 - this agent can start, stop, or restart it across sessions
 - canonical UI endpoint: `http://127.0.0.1:8082/`
 - canonical status JSON endpoint: `http://127.0.0.1:8082/api/status`
+- helper script:
+  - `./scripts/daemon-8082.sh start`
+  - `./scripts/daemon-8082.sh stop`
+  - `./scripts/daemon-8082.sh restart`
+  - `./scripts/daemon-8082.sh status`
+  - `./scripts/daemon-8082.sh logs`
 
 ## Intended Usage Model
 

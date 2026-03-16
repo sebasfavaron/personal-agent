@@ -120,6 +120,8 @@ class PersonalAgentRuntime:
 
     def dashboard_snapshot(self) -> dict[str, Any]:
         snapshot = self.service.dashboard_snapshot(owner_agent=PERSONAL_AGENT_ID)
+        snapshot["active_tasks"] = [task for task in snapshot.get("active_tasks", []) if task.get("parent_task_id") is None]
+        snapshot["blocked_tasks"] = [task for task in snapshot.get("blocked_tasks", []) if task.get("parent_task_id") is None]
         task_ids = [task["id"] for key in ("active_tasks", "blocked_tasks") for task in snapshot.get(key, [])]
         latest_runs = {
             task_id: runs[0] if runs else None for task_id in task_ids for runs in [self.service.list_task_runs(task_id=task_id, limit=1)]
@@ -141,12 +143,18 @@ class PersonalAgentRuntime:
                 )
                 for task in snapshot.get(key, [])
             ]
+        snapshot["active_tasks"].sort(key=self._task_sort_key)
+        snapshot["blocked_tasks"].sort(key=self._task_sort_key)
         snapshot["summary"] = {
             "active_task_count": len(snapshot.get("active_tasks", [])),
             "blocked_task_count": len(snapshot.get("blocked_tasks", [])),
             "pending_approval_count": len(snapshot.get("pending_approvals", [])),
             "pending_handoff_count": len(snapshot.get("pending_handoffs", [])),
+            "running_task_count": sum(1 for task in snapshot.get("active_tasks", []) if task["execution_state"] == "running"),
+            "started_task_count": sum(1 for task in snapshot.get("active_tasks", []) if task["has_started"]),
+            "queued_task_count": sum(1 for task in snapshot.get("active_tasks", []) if not task["has_started"]),
         }
+        snapshot["recent_deliverables"] = self._recent_deliverables(limit=8)
         snapshot["memory_context"] = self.service.context_for(
             project=PERSONAL_PROJECT_ID, repo=SYSTEM_REPO_ID, agent=PERSONAL_AGENT_ID, task="personal front door"
         )
@@ -603,8 +611,12 @@ class PersonalAgentRuntime:
         metadata = task.get("metadata", {})
         route = metadata.get("route", {})
         decorated = dict(task)
+        execution_state = self._execution_state_for_task(latest_run)
         decorated["open_subtask_count"] = open_subtask_count
         decorated["latest_run"] = latest_run
+        decorated["execution_state"] = execution_state
+        decorated["has_started"] = latest_run is not None
+        decorated["last_run_started_at"] = latest_run.get("started_at") if latest_run else None
         decorated["pending_approval"] = pending_approval
         decorated["next_action"] = self._next_action_for_task(task, latest_run, pending_approval)
         decorated["route_summary"] = {
@@ -613,6 +625,33 @@ class PersonalAgentRuntime:
             "planning_source": route.get("planning_source"),
         }
         return decorated
+
+    def _execution_state_for_task(self, latest_run: dict[str, Any] | None) -> str:
+        if latest_run is None:
+            return "not_started"
+        if latest_run.get("status") == "running":
+            return "running"
+        return "ran_before"
+
+    def _task_sort_key(self, task: dict[str, Any]) -> tuple[int, str]:
+        order = {"running": 0, "ran_before": 1, "not_started": 2}
+        return (order.get(task.get("execution_state", "not_started"), 9), str(task.get("updated_at", "")))
+
+    def _recent_deliverables(self, limit: int = 8) -> list[dict[str, Any]]:
+        deliverables: list[dict[str, Any]] = []
+        for artifact in self.service.list_artifacts(limit=50):
+            if artifact.get("artifact_type") != "report":
+                continue
+            task = self.service.get_task(artifact["task_id"])
+            if task.get("parent_task_id") is not None:
+                continue
+            item = dict(artifact)
+            item["task_title"] = task["title"]
+            item["task_status"] = task["status"]
+            deliverables.append(item)
+            if len(deliverables) >= limit:
+                break
+        return deliverables
 
     def _next_action_for_task(
         self,
