@@ -187,6 +187,9 @@ class FakeOperationalMemoryService(FakeMemoryService):
             items = [item for item in items if item["task_id"] == task_id]
         return [dict(item) for item in sorted(items, key=lambda item: item["created_at"], reverse=True)[:limit]]
 
+    def get_artifact(self, artifact_id: str) -> dict:
+        return dict(self.artifacts[artifact_id])
+
     def create_handoff(self, task_id: str, from_agent: str, to_agent: str, reason: str, payload: dict, metadata=None) -> dict:
         handoff_id = self._next_id("handoff")
         now = self._now()
