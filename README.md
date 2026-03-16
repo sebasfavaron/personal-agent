@@ -11,7 +11,6 @@ See [INSTALL.md](INSTALL.md) for setup.
 - Repo-local ownership for personal capabilities
 - Global skill discovery via symlinks from `~/.codex/skills`
 - Shared DB in sibling repo `~/agents-database` is the durable source of truth for new work
-- legacy local SQLite stays only for transition, migration, and old-run inspection
 - Human approval required for outreach / external side effects
 - `ai-dev-workflow` stays focused on project workflows
 
@@ -31,12 +30,9 @@ System map and machine-recreation guide:
 
 ## What Exists Today
 
-This repository now contains both:
+This repository now contains:
 
-- legacy local-first research/task runtime
-- emerging V1 front-door runtime on top of shared memory
-
-- SQLite-backed persistence for research runs
+- shared-memory-backed persistence for research runs
 - source, claim, task, and approval tracking
 - memory search over stored runs, claims, and tasks
 - Codex skill wrappers owned by this repo
@@ -49,11 +45,10 @@ This repository now contains both:
 
 Durable shared memory lives in the sibling project at `~/agents-database`.
 
-- new research claims and sources are mirrored into shared memory when available
-- completed research runs are mirrored as durable memory summaries
-- `memory-search` now queries shared memory first and also returns legacy local matches
-- `memory-migrate` imports existing legacy research memory into the shared system
-- `research status --run-id <id>` falls back to the mirrored shared-memory record when the old local run is no longer present
+- research, leisure, approvals, and task intake write directly to shared memory
+- `memory-search` reads shared memory directly
+- `memory-migrate` is now a no-op compatibility command
+- `research status --run-id <id>` still falls back to old mirrored shared-memory records when present
 
 Default shared-memory path discovery:
 

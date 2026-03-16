@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import CODEX_BIN, DATA_DIR
+from .config import BASE_DIR, CODEX_BIN
 from .repo_targets import default_code_repo, infer_target_repo, repo_catalog, repo_target_by_id
 from .shared_memory import get_memory_service
 
 
 PERSONAL_AGENT_ID = "personal-agent"
 PERSONAL_PROJECT_ID = "proj_personal_agent"
-RUNS_DIR = DATA_DIR / "runs"
+RUNS_DIR = BASE_DIR / "data" / "runs"
 
 
 @dataclass(slots=True)

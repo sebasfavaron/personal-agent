@@ -197,7 +197,7 @@ class PersonalAgentTests(unittest.TestCase):
         from personal_agent import shared_memory
 
         self._original_config = {
-            "DATA_DIR": config.DATA_DIR,
+            "BASE_DIR": config.BASE_DIR,
             "SHARED_MEMORY_ROOT": config.SHARED_MEMORY_ROOT,
             "SHARED_MEMORY_SRC_DIR": config.SHARED_MEMORY_SRC_DIR,
             "SHARED_MEMORY_DB_PATH": config.SHARED_MEMORY_DB_PATH,
@@ -206,7 +206,7 @@ class PersonalAgentTests(unittest.TestCase):
             "SHARED_MEMORY_SRC_DIR": shared_memory.SHARED_MEMORY_SRC_DIR,
             "SHARED_MEMORY_DB_PATH": shared_memory.SHARED_MEMORY_DB_PATH,
         }
-        config.DATA_DIR = Path(self.tmp.name)
+        config.BASE_DIR = Path(self.tmp.name)
         config.SHARED_MEMORY_ROOT = self.agents_db_dir
         config.SHARED_MEMORY_SRC_DIR = self.agents_db_dir / "src"
         config.SHARED_MEMORY_DB_PATH = Path(self.tmp.name) / "shared-agent-memory.sqlite3"
@@ -222,7 +222,7 @@ class PersonalAgentTests(unittest.TestCase):
         from personal_agent import shared_memory
 
         self.runtime_memory_patcher.stop()
-        config.DATA_DIR = self._original_config["DATA_DIR"]
+        config.BASE_DIR = self._original_config["BASE_DIR"]
         config.SHARED_MEMORY_ROOT = self._original_config["SHARED_MEMORY_ROOT"]
         config.SHARED_MEMORY_SRC_DIR = self._original_config["SHARED_MEMORY_SRC_DIR"]
         config.SHARED_MEMORY_DB_PATH = self._original_config["SHARED_MEMORY_DB_PATH"]

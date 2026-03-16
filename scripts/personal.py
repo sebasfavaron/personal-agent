@@ -11,7 +11,6 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from personal_agent.db import ensure_db
 from personal_agent.daemon import run_server
 from personal_agent.migration import migrate_legacy_memory
 from personal_agent.reporting import build_report
@@ -162,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     tasks_add.add_argument("--run-id", default=None)
     tasks_add.add_argument("--kind", default="task")
     tasks_add.add_argument("--status", default="open")
-    tasks_add.add_argument("--parent-task-id", type=int, default=None)
+    tasks_add.add_argument("--parent-task-id", default=None)
     tasks_add.add_argument("--notes", default=None)
     tasks_add.add_argument("--due-at", default=None)
 
@@ -174,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     tasks_next.add_argument("--limit", type=int, default=10)
 
     tasks_close = tasks_sub.add_parser("close")
-    tasks_close.add_argument("--task-id", type=int, required=True)
+    tasks_close.add_argument("--task-id", required=True)
     tasks_close.add_argument("--status", default="done")
 
     tasks_intake = tasks_sub.add_parser("intake")
@@ -210,10 +209,6 @@ def main() -> int:
         as_json = True
         raw_argv = [arg for arg in raw_argv if arg != "--json"]
     args = parser.parse_args((["--json"] if as_json else []) + raw_argv)
-    legacy_commands = {"research", "report", "memory-search", "memory-migrate", "route", "tasks", "leisure"}
-    if args.command in legacy_commands or (args.command == "approvals" and args.approvals_command in {"list", "request"}):
-        ensure_db()
-
     if args.command == "research":
         if args.research_command == "start":
             _print(start_research(args.goal, args.scope, args.assumptions), args.as_json)
