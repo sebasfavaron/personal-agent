@@ -6,8 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from .db import connect
-from .shared_memory import get_legacy_run_from_shared_memory, mirror_claim, mirror_run_summary, mirror_source, search_shared_memory
+from . import shared_memory
 from .source_capture import fetch_url_capture
 from .web_search import search_web
 
@@ -20,57 +19,292 @@ def _domain_for(url: str) -> str:
     return urlparse(url).netloc
 
 
-def _log(conn, category: str, ref_id: str | None, message: str) -> None:
-    conn.execute(
-        "INSERT INTO event_log (category, ref_id, message, created_at) VALUES (?, ?, ?, ?)",
-        (category, ref_id, message, _now()),
+def _run_source_ref(run_id: str) -> str:
+    return f"personal-agent:run:{run_id}"
+
+
+def _require_service():
+    service = shared_memory.get_memory_service()
+    if service is None:
+        raise RuntimeError("shared-agent-memory is not available; personal-agent now requires the shared DB")
+    return service
+
+
+def _matches_query(query: str, *values: str | None) -> bool:
+    normalized = query.strip().lower()
+    haystack = " ".join((value or "") for value in values).lower()
+    return normalized in haystack
+
+
+def _run_content(goal: str, scope: str, assumptions: str, summary: str) -> str:
+    return "\n".join(
+        [
+            f"Goal: {goal}",
+            f"Scope: {scope}".rstrip(),
+            f"Assumptions: {assumptions}".rstrip(),
+            f"Summary: {summary}".rstrip(),
+        ]
+    ).strip()
+
+
+def _extract_line_value(content: str, label: str) -> str:
+    prefix = f"{label}:"
+    for line in content.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return ""
+
+
+def _get_run_memory(service, run_id: str) -> dict[str, Any]:
+    try:
+        memory = service.get_memory(run_id)
+    except (AttributeError, KeyError) as exc:
+        bridged = shared_memory.get_legacy_run_from_shared_memory(run_id)
+        if bridged is not None:
+            raise ValueError("__bridge__") from exc
+        raise ValueError(f"Unknown research run: {run_id}") from exc
+    if memory.get("metadata", {}).get("legacy_kind") != "research_run":
+        raise ValueError(f"Unknown research run: {run_id}")
+    return memory
+
+
+def _upsert_run(
+    service,
+    run_id: str,
+    *,
+    goal: str,
+    scope: str,
+    assumptions: str,
+    status: str,
+    summary: str | None,
+    created_at: str | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any]:
+    existing = None
+    try:
+        existing = service.get_memory(run_id)
+    except KeyError:
+        pass
+    effective_summary = summary if summary is not None else (existing["summary"] if existing else goal)
+    effective_created_at = created_at or (existing["created_at"] if existing else _now())
+    effective_completed_at = completed_at or (existing.get("metadata", {}).get("completed_at") if existing else None)
+    return service.ingest(
+        {
+            "id": run_id,
+            "type": "episode",
+            "scope": "global",
+            "status": "active",
+            "source_kind": "run",
+            "title": f"Research run: {goal}",
+            "content": _run_content(goal, scope, assumptions, effective_summary),
+            "summary": effective_summary,
+            "confidence": 0.9,
+            "freshness": 0.85,
+            "created_at": effective_created_at,
+            "observed_at": effective_completed_at or _now(),
+            "source_ref": _run_source_ref(run_id),
+            "evidence_ref": _run_source_ref(run_id),
+            "embedding": service._text_embedding(f"{goal}\n{scope}\n{assumptions}\n{effective_summary}"),
+            "metadata": {
+                "legacy_system": "personal-agent",
+                "legacy_kind": "research_run",
+                "legacy_run_id": run_id,
+                "run_status": status,
+                "completed_at": effective_completed_at,
+            },
+        }
     )
 
 
+def _record_memory(
+    service,
+    *,
+    title: str,
+    content: str,
+    summary: str,
+    source_ref: str,
+    evidence_ref: str | None,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    return service.ingest(
+        {
+            "id": f"mem_{uuid.uuid4().hex}",
+            "type": "artifact",
+            "scope": "global",
+            "status": "active",
+            "source_kind": "manual",
+            "title": title,
+            "content": content,
+            "summary": summary,
+            "confidence": 0.75,
+            "freshness": 0.75,
+            "source_ref": source_ref,
+            "evidence_ref": evidence_ref,
+            "embedding": service._text_embedding(content),
+            "metadata": metadata,
+        }
+    )
+
+
+def _run_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "goal": _extract_line_value(memory["content"], "Goal") or memory["title"].removeprefix("Research run: ").strip(),
+        "scope": _extract_line_value(memory["content"], "Scope"),
+        "assumptions": _extract_line_value(memory["content"], "Assumptions"),
+        "status": metadata.get("run_status", "active"),
+        "summary": _extract_line_value(memory["content"], "Summary") or memory["summary"],
+        "created_at": memory["created_at"],
+        "updated_at": memory["updated_at"],
+        "completed_at": metadata.get("completed_at"),
+    }
+
+
+def _step_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "kind": metadata.get("step_kind", "note"),
+        "content": memory["content"],
+        "status": metadata.get("step_status", "completed"),
+        "created_at": memory["created_at"],
+    }
+
+
+def _source_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "url": metadata.get("url", ""),
+        "title": memory["title"],
+        "domain": metadata.get("domain"),
+        "notes": metadata.get("notes", ""),
+        "retrieved_at": memory["created_at"],
+    }
+
+
+def _claim_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "claim": memory["content"],
+        "confidence": memory["confidence"],
+        "status": metadata.get("claim_status", "tentative"),
+        "source_url": metadata.get("source_url", ""),
+        "created_at": memory["created_at"],
+    }
+
+
+def _artifact_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "kind": metadata.get("artifact_kind", "artifact"),
+        "content": memory["content"],
+        "created_at": memory["created_at"],
+    }
+
+
+def _task_record(task: dict[str, Any]) -> dict[str, Any]:
+    metadata = task.get("metadata", {})
+    return {
+        "id": task["id"],
+        "run_id": metadata.get("legacy_run_id"),
+        "task": task["title"],
+        "kind": task["kind"],
+        "status": task["status"],
+        "parent_task_id": task.get("parent_task_id"),
+        "notes": metadata.get("notes"),
+        "due_at": task.get("due_at"),
+        "created_at": task["created_at"],
+    }
+
+
+def _leisure_record(memory: dict[str, Any]) -> dict[str, Any]:
+    metadata = memory["metadata"]
+    return {
+        "id": memory["id"],
+        "title": memory["title"],
+        "media_type": metadata.get("media_type"),
+        "status": metadata.get("item_status", "to_consume"),
+        "notes": metadata.get("notes"),
+        "created_at": memory["created_at"],
+        "updated_at": memory["updated_at"],
+    }
+
+
 def start_research(goal: str, scope: str = "", assumptions: str = "") -> dict[str, Any]:
+    service = _require_service()
     run_id = str(uuid.uuid4())
-    now = _now()
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO research_runs (id, goal, scope, assumptions, status, summary, created_at, updated_at, completed_at)
-            VALUES (?, ?, ?, ?, 'active', NULL, ?, ?, NULL)
-            """,
-            (run_id, goal, scope, assumptions, now, now),
-        )
-        conn.execute(
-            """
-            INSERT INTO research_steps (run_id, kind, content, status, created_at)
-            VALUES (?, 'plan', ?, 'active', ?)
-            """,
-            (run_id, goal, now),
-        )
-        _log(conn, "research_run", run_id, f"Started research: {goal}")
+    _upsert_run(
+        service,
+        run_id,
+        goal=goal,
+        scope=scope,
+        assumptions=assumptions,
+        status="active",
+        summary=goal,
+    )
+    _record_memory(
+        service,
+        title=f"Research step: {goal[:80]}",
+        content=goal,
+        summary=goal[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=_run_source_ref(run_id),
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "research_step",
+            "legacy_run_id": run_id,
+            "step_kind": "plan",
+            "step_status": "active",
+        },
+    )
     return get_run(run_id)
 
 
 def add_source(run_id: str, url: str, title: str = "", notes: str = "") -> dict[str, Any]:
-    now = _now()
+    service = _require_service()
+    run = _run_record(_get_run_memory(service, run_id))
     domain = _domain_for(url)
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO sources (run_id, url, title, domain, notes, retrieved_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (run_id, url, title, domain, notes, now),
-        )
-        conn.execute(
-            "UPDATE research_runs SET updated_at = ? WHERE id = ?",
-            (now, run_id),
-        )
-        _log(conn, "source", run_id, f"Added source {url}")
-    mirror_source(run_id, url, title, notes, domain)
+    _record_memory(
+        service,
+        title=title or url,
+        content="\n".join(part for part in [title, notes, url] if part).strip() or url,
+        summary=notes[:180] if notes else (title or url)[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=url,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "source",
+            "legacy_run_id": run_id,
+            "url": url,
+            "domain": domain,
+            "notes": notes,
+        },
+    )
+    _upsert_run(
+        service,
+        run_id,
+        goal=run["goal"],
+        scope=run["scope"],
+        assumptions=run["assumptions"],
+        status=run["status"],
+        summary=run["summary"],
+        created_at=run["created_at"],
+        completed_at=run["completed_at"],
+    )
     return {"run_id": run_id, "url": url, "domain": domain, "title": title, "notes": notes}
 
 
 def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> dict[str, Any]:
-    now = _now()
+    service = _require_service()
+    run = _run_record(_get_run_memory(service, run_id))
     capture = fetch_url_capture(url)
     effective_title = title or capture["title"] or url
     text = capture["text"]
@@ -78,47 +312,55 @@ def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> d
     if capture["content_type"]:
         summary_notes = f"{notes}\ncontent_type={capture['content_type']}".strip()
 
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO sources (run_id, url, title, domain, notes, retrieved_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (run_id, url, effective_title, _domain_for(url), summary_notes, now),
-        )
-        conn.execute(
-            """
-            INSERT INTO artifacts (run_id, kind, content, created_at)
-            VALUES (?, 'source_capture', ?, ?)
-            """,
-            (
-                run_id,
-                json.dumps(
-                    {
-                        "url": url,
-                        "title": effective_title,
-                        "content_type": capture["content_type"],
-                        "text": text[:20000],
-                    },
-                    sort_keys=True,
-                ),
-                now,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO research_steps (run_id, kind, content, status, created_at)
-            VALUES (?, 'capture', ?, 'completed', ?)
-            """,
-            (run_id, f"Captured {url}", now),
-        )
-        conn.execute(
-            "UPDATE research_runs SET updated_at = ? WHERE id = ?",
-            (now, run_id),
-        )
-        _log(conn, "source_capture", run_id, f"Captured source {url}")
-    mirror_source(run_id, url, effective_title, summary_notes, _domain_for(url))
-
+    add_source(run_id, url, effective_title, summary_notes)
+    _record_memory(
+        service,
+        title=f"Capture: {effective_title[:80]}",
+        content=json.dumps(
+            {
+                "url": url,
+                "title": effective_title,
+                "content_type": capture["content_type"],
+                "text": text[:20000],
+            },
+            sort_keys=True,
+        ),
+        summary=effective_title[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=url,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "artifact",
+            "legacy_run_id": run_id,
+            "artifact_kind": "source_capture",
+        },
+    )
+    _record_memory(
+        service,
+        title=f"Research step: capture {url[:80]}",
+        content=f"Captured {url}",
+        summary=f"Captured {url}"[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=url,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "research_step",
+            "legacy_run_id": run_id,
+            "step_kind": "capture",
+            "step_status": "completed",
+        },
+    )
+    _upsert_run(
+        service,
+        run_id,
+        goal=run["goal"],
+        scope=run["scope"],
+        assumptions=run["assumptions"],
+        status=run["status"],
+        summary=run["summary"],
+        created_at=run["created_at"],
+        completed_at=run["completed_at"],
+    )
     return {
         "run_id": run_id,
         "url": url,
@@ -132,43 +374,58 @@ def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> d
 
 
 def search_and_store_web_results(run_id: str, query: str, max_results: int = 5) -> dict[str, Any]:
-    now = _now()
+    service = _require_service()
+    run = _run_record(_get_run_memory(service, run_id))
     payload = search_web(query, max_results=max_results)
     results = payload["results"]
-
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO artifacts (run_id, kind, content, created_at)
-            VALUES (?, 'search_results', ?, ?)
-            """,
-            (
-                run_id,
-                json.dumps(
-                    {
-                        "query": query,
-                        "engine": payload["engine"],
-                        "results": results,
-                        "request_url": payload["request_url"],
-                    },
-                    sort_keys=True,
-                ),
-                now,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO research_steps (run_id, kind, content, status, created_at)
-            VALUES (?, 'search', ?, 'completed', ?)
-            """,
-            (run_id, f"Searched web for: {query}", now),
-        )
-        conn.execute(
-            "UPDATE research_runs SET updated_at = ? WHERE id = ?",
-            (now, run_id),
-        )
-        _log(conn, "search", run_id, f"Searched web for {query}")
-
+    _record_memory(
+        service,
+        title=f"Search results: {query[:80]}",
+        content=json.dumps(
+            {
+                "query": query,
+                "engine": payload["engine"],
+                "results": results,
+                "request_url": payload["request_url"],
+            },
+            sort_keys=True,
+        ),
+        summary=query[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=payload["request_url"],
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "artifact",
+            "legacy_run_id": run_id,
+            "artifact_kind": "search_results",
+        },
+    )
+    _record_memory(
+        service,
+        title=f"Research step: search {query[:80]}",
+        content=f"Searched web for: {query}",
+        summary=query[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=payload["request_url"],
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "research_step",
+            "legacy_run_id": run_id,
+            "step_kind": "search",
+            "step_status": "completed",
+        },
+    )
+    _upsert_run(
+        service,
+        run_id,
+        goal=run["goal"],
+        scope=run["scope"],
+        assumptions=run["assumptions"],
+        status=run["status"],
+        summary=run["summary"],
+        created_at=run["created_at"],
+        completed_at=run["completed_at"],
+    )
     return {
         "run_id": run_id,
         "query": query,
@@ -185,21 +442,34 @@ def add_claim(
     status: str = "tentative",
     source_url: str = "",
 ) -> dict[str, Any]:
-    now = _now()
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO claims (run_id, claim, confidence, status, source_url, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (run_id, claim, confidence, status, source_url or None, now),
-        )
-        conn.execute(
-            "UPDATE research_runs SET updated_at = ? WHERE id = ?",
-            (now, run_id),
-        )
-        _log(conn, "claim", run_id, f"Added claim: {claim[:120]}")
-    mirror_claim(run_id, claim, confidence, status, source_url)
+    service = _require_service()
+    run = _run_record(_get_run_memory(service, run_id))
+    _record_memory(
+        service,
+        title=f"Research claim: {claim[:80]}",
+        content=claim,
+        summary=claim[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=source_url or None,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "claim",
+            "legacy_run_id": run_id,
+            "claim_status": status,
+            "source_url": source_url,
+        },
+    )
+    _upsert_run(
+        service,
+        run_id,
+        goal=run["goal"],
+        scope=run["scope"],
+        assumptions=run["assumptions"],
+        status=run["status"],
+        summary=run["summary"],
+        created_at=run["created_at"],
+        completed_at=run["completed_at"],
+    )
     return {
         "run_id": run_id,
         "claim": claim,
@@ -210,24 +480,7 @@ def add_claim(
 
 
 def add_task(run_id: str | None, task: str, status: str = "open", due_at: str | None = None) -> dict[str, Any]:
-    now = _now()
-    with connect() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO tasks (run_id, task, kind, status, parent_task_id, notes, due_at, created_at)
-            VALUES (?, ?, 'task', ?, NULL, NULL, ?, ?)
-            """,
-            (run_id, task, status, due_at, now),
-        )
-        ref_id = str(run_id) if run_id else None
-        _log(conn, "task", ref_id, f"Added task: {task[:120]}")
-    return {
-        "id": cur.lastrowid,
-        "run_id": run_id,
-        "task": task,
-        "status": status,
-        "due_at": due_at,
-    }
+    return add_structured_task(run_id, task, kind="task", status=status, due_at=due_at)
 
 
 def add_structured_task(
@@ -236,31 +489,26 @@ def add_structured_task(
     *,
     kind: str = "task",
     status: str = "open",
-    parent_task_id: int | None = None,
+    parent_task_id: str | None = None,
     notes: str | None = None,
     due_at: str | None = None,
 ) -> dict[str, Any]:
-    now = _now()
-    with connect() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO tasks (run_id, task, kind, status, parent_task_id, notes, due_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (run_id, task, kind, status, parent_task_id, notes, due_at, now),
-        )
-        ref_id = str(run_id) if run_id else None
-        _log(conn, "task", ref_id, f"Added {kind}: {task[:120]}")
-    return {
-        "id": cur.lastrowid,
-        "run_id": run_id,
-        "task": task,
-        "kind": kind,
-        "status": status,
-        "parent_task_id": parent_task_id,
-        "notes": notes,
-        "due_at": due_at,
-    }
+    service = _require_service()
+    created = service.create_task(
+        title=task,
+        intent=notes or task,
+        kind=kind,
+        status=status,
+        parent_task_id=parent_task_id,
+        due_at=due_at,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "task",
+            "legacy_run_id": run_id,
+            "notes": notes,
+        },
+    )
+    return _task_record(created)
 
 
 def add_leisure_item(
@@ -270,96 +518,64 @@ def add_leisure_item(
     status: str = "to_consume",
     notes: str | None = None,
 ) -> dict[str, Any]:
-    now = _now()
-    with connect() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO leisure_items (title, media_type, status, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (title, media_type, status, notes, now, now),
-        )
-        _log(conn, "leisure_item", str(cur.lastrowid), f"Added leisure item: {title[:120]}")
-    return {
-        "id": cur.lastrowid,
-        "title": title,
-        "media_type": media_type,
-        "status": status,
-        "notes": notes,
-        "created_at": now,
-        "updated_at": now,
-    }
+    service = _require_service()
+    created = _record_memory(
+        service,
+        title=title,
+        content="\n".join(part for part in [title, notes or "", media_type] if part).strip(),
+        summary=(notes or title)[:180],
+        source_ref="personal-agent:leisure",
+        evidence_ref=None,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "leisure_item",
+            "media_type": media_type,
+            "item_status": status,
+            "notes": notes,
+        },
+    )
+    return _leisure_record(created)
 
 
 def list_leisure_items(
     media_type: str | None = None,
     status: str | None = None,
 ) -> list[dict[str, Any]]:
-    query = """
-        SELECT id, title, media_type, status, notes, created_at, updated_at
-        FROM leisure_items
-    """
-    clauses: list[str] = []
-    params: list[Any] = []
-    if media_type:
-        clauses.append("media_type = ?")
-        params.append(media_type)
-    if status:
-        clauses.append("status = ?")
-        params.append(status)
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY updated_at DESC, id DESC"
-    with connect() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    service = _require_service()
+    rows = service.list_memories(source_ref="personal-agent:leisure", limit=200)
+    items = [_leisure_record(row) for row in rows if row["metadata"].get("legacy_kind") == "leisure_item"]
+    if media_type is not None:
+        items = [item for item in items if item["media_type"] == media_type]
+    if status is not None:
+        items = [item for item in items if item["status"] == status]
+    return sorted(items, key=lambda item: (item["updated_at"], item["id"]), reverse=True)
 
 
-def close_task(task_id: int, status: str = "done") -> dict[str, Any]:
-    now = _now()
-    with connect() as conn:
-        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
-        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        _log(conn, "task", str(task_id), f"Marked task as {status} at {now}")
-    if row is None:
-        raise ValueError(f"Unknown task: {task_id}")
-    return dict(row)
+def close_task(task_id: str, status: str = "done") -> dict[str, Any]:
+    service = _require_service()
+    task = service.get_task(task_id)
+    updated = service.update_task(task_id, status=status, metadata=task["metadata"])
+    return _task_record(updated)
 
 
 def list_tasks(status: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
-    query = """
-        SELECT id, run_id, task, kind, status, parent_task_id, notes, due_at, created_at
-        FROM tasks
-    """
-    clauses: list[str] = []
-    params: list[Any] = []
-    if status:
-        clauses.append("status = ?")
-        params.append(status)
-    if run_id:
-        clauses.append("run_id = ?")
-        params.append(run_id)
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY created_at DESC, id DESC"
-    with connect() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+    service = _require_service()
+    tasks = [
+        _task_record(task)
+        for task in service.list_tasks(limit=500)
+        if task.get("metadata", {}).get("legacy_kind") == "task"
+    ]
+    if status is not None:
+        tasks = [task for task in tasks if task["status"] == status]
+    if run_id is not None:
+        tasks = [task for task in tasks if task["run_id"] == run_id]
+    return sorted(tasks, key=lambda item: (item["created_at"], item["id"]), reverse=True)
 
 
 def next_tasks(limit: int = 10) -> list[dict[str, Any]]:
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, run_id, task, kind, status, parent_task_id, notes, due_at, created_at
-            FROM tasks
-            WHERE status = 'open'
-            ORDER BY CASE WHEN kind = 'subtask' THEN 0 ELSE 1 END, created_at ASC, id ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    tasks = [task for task in list_tasks(status="open") if task["kind"] in {"task", "subtask", "clarification", "research_note"}]
+    tasks.sort(key=lambda item: (0 if item["kind"] == "subtask" else 1, item["created_at"], item["id"]))
+    return tasks[:limit]
 
 
 def create_task_intake(
@@ -393,150 +609,143 @@ def create_task_intake(
 
 
 def request_approval(kind: str, payload: dict[str, Any], risk_level: str = "high") -> dict[str, Any]:
-    now = _now()
-    serialized = json.dumps(payload, sort_keys=True)
-    with connect() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO approvals (kind, payload, risk_level, status, requested_at, resolved_at)
-            VALUES (?, ?, ?, 'pending', ?, NULL)
-            """,
-            (kind, serialized, risk_level, now),
-        )
-        approval_id = cur.lastrowid
-        _log(conn, "approval", str(approval_id), f"Requested approval for {kind}")
+    service = _require_service()
+    created = _record_memory(
+        service,
+        title=f"Approval request: {kind}",
+        content=json.dumps(payload, sort_keys=True),
+        summary=kind,
+        source_ref="personal-agent:approval",
+        evidence_ref=None,
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "approval_request",
+            "approval_kind": kind,
+            "approval_status": "pending",
+            "risk_level": risk_level,
+            "payload": payload,
+        },
+    )
     return {
-        "id": approval_id,
+        "id": created["id"],
         "kind": kind,
         "payload": payload,
         "risk_level": risk_level,
         "status": "pending",
-        "requested_at": now,
+        "requested_at": created["created_at"],
     }
 
 
 def close_research(run_id: str, summary: str) -> dict[str, Any]:
-    now = _now()
-    with connect() as conn:
-        conn.execute(
-            """
-            UPDATE research_steps
-            SET status = 'completed'
-            WHERE run_id = ? AND status != 'completed'
-            """,
-            (run_id,),
-        )
-        conn.execute(
-            """
-            UPDATE research_runs
-            SET status = 'completed', summary = ?, updated_at = ?, completed_at = ?
-            WHERE id = ?
-            """,
-            (summary, now, now, run_id),
-        )
-        conn.execute(
-            """
-            INSERT INTO artifacts (run_id, kind, content, created_at)
-            VALUES (?, 'report_summary', ?, ?)
-            """,
-            (run_id, summary, now),
-        )
-        _log(conn, "research_run", run_id, "Closed research run")
-    run = get_run(run_id)
-    mirror_run_summary(run)
-    return run
+    service = _require_service()
+    run = _run_record(_get_run_memory(service, run_id))
+    _record_memory(
+        service,
+        title=f"Research summary: {run['goal'][:80]}",
+        content=summary,
+        summary=summary[:180],
+        source_ref=_run_source_ref(run_id),
+        evidence_ref=_run_source_ref(run_id),
+        metadata={
+            "legacy_system": "personal-agent",
+            "legacy_kind": "artifact",
+            "legacy_run_id": run_id,
+            "artifact_kind": "report_summary",
+        },
+    )
+    _upsert_run(
+        service,
+        run_id,
+        goal=run["goal"],
+        scope=run["scope"],
+        assumptions=run["assumptions"],
+        status="completed",
+        summary=summary,
+        created_at=run["created_at"],
+        completed_at=_now(),
+    )
+    return get_run(run_id)
 
 
 def get_run(run_id: str) -> dict[str, Any]:
-    with connect() as conn:
-        run = conn.execute("SELECT * FROM research_runs WHERE id = ?", (run_id,)).fetchone()
-        if run is None:
-            bridged = get_legacy_run_from_shared_memory(run_id)
+    service = _require_service()
+    try:
+        run_memory = _get_run_memory(service, run_id)
+    except ValueError as exc:
+        if str(exc) == "__bridge__":
+            bridged = shared_memory.get_legacy_run_from_shared_memory(run_id)
             if bridged is not None:
                 return bridged
-            raise ValueError(f"Unknown research run: {run_id}")
-        steps = [dict(row) for row in conn.execute("SELECT * FROM research_steps WHERE run_id = ? ORDER BY id", (run_id,))]
-        sources = [dict(row) for row in conn.execute("SELECT * FROM sources WHERE run_id = ? ORDER BY id", (run_id,))]
-        claims = [dict(row) for row in conn.execute("SELECT * FROM claims WHERE run_id = ? ORDER BY id", (run_id,))]
-        tasks = [dict(row) for row in conn.execute("SELECT * FROM tasks WHERE run_id = ? ORDER BY id", (run_id,))]
-        artifacts = [dict(row) for row in conn.execute("SELECT * FROM artifacts WHERE run_id = ? ORDER BY id", (run_id,))]
+        raise
+    related = service.list_memories(source_ref=_run_source_ref(run_id), limit=500)
+    steps = [_step_record(row) for row in related if row["metadata"].get("legacy_kind") == "research_step"]
+    sources = [_source_record(row) for row in related if row["metadata"].get("legacy_kind") == "source"]
+    claims = [_claim_record(row) for row in related if row["metadata"].get("legacy_kind") == "claim"]
+    artifacts = [_artifact_record(row) for row in related if row["metadata"].get("legacy_kind") == "artifact"]
+    tasks = [
+        _task_record(task)
+        for task in service.list_tasks(limit=500)
+        if task.get("metadata", {}).get("legacy_kind") == "task"
+        and task.get("metadata", {}).get("legacy_run_id") == run_id
+    ]
     return {
-        "run": dict(run),
-        "steps": steps,
-        "sources": sources,
-        "claims": claims,
-        "tasks": tasks,
-        "artifacts": artifacts,
+        "run": _run_record(run_memory),
+        "steps": sorted(steps, key=lambda item: item["created_at"]),
+        "sources": sorted(sources, key=lambda item: item["retrieved_at"]),
+        "claims": sorted(claims, key=lambda item: item["created_at"]),
+        "tasks": sorted(tasks, key=lambda item: item["created_at"]),
+        "artifacts": sorted(artifacts, key=lambda item: item["created_at"]),
     }
 
 
 def list_approvals(status: str = "pending") -> list[dict[str, Any]]:
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM approvals WHERE status = ? ORDER BY requested_at DESC",
-            (status,),
-        ).fetchall()
-    approvals = [dict(row) for row in rows]
-    for approval in approvals:
-        approval["payload"] = json.loads(approval["payload"])
-    return approvals
+    service = _require_service()
+    approvals = []
+    for memory in service.list_memories(source_ref="personal-agent:approval", limit=200):
+        metadata = memory["metadata"]
+        if metadata.get("legacy_kind") != "approval_request":
+            continue
+        if metadata.get("approval_status", "pending") != status:
+            continue
+        approvals.append(
+            {
+                "id": memory["id"],
+                "kind": metadata.get("approval_kind"),
+                "payload": metadata.get("payload", {}),
+                "risk_level": metadata.get("risk_level", "high"),
+                "status": metadata.get("approval_status", "pending"),
+                "requested_at": memory["created_at"],
+            }
+        )
+    return sorted(approvals, key=lambda item: item["requested_at"], reverse=True)
 
 
 def search_memory(query: str) -> dict[str, Any]:
-    like = f"%{query.lower()}%"
-    with connect() as conn:
-        runs = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT id, goal, status, summary, created_at, updated_at
-                FROM research_runs
-                WHERE lower(goal) LIKE ? OR lower(coalesce(summary, '')) LIKE ?
-                ORDER BY updated_at DESC
-                """,
-                (like, like),
-            )
-        ]
-        claims = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT run_id, claim, confidence, status, source_url, created_at
-                FROM claims
-                WHERE lower(claim) LIKE ?
-                ORDER BY created_at DESC
-                LIMIT 20
-                """,
-                (like,),
-            )
-        ]
-        tasks = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT id, run_id, task, status, due_at, created_at
-                FROM tasks
-                WHERE lower(task) LIKE ?
-                ORDER BY created_at DESC
-                LIMIT 20
-                """,
-                (like,),
-            )
-        ]
-        leisure_items = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT id, title, media_type, status, notes, created_at, updated_at
-                FROM leisure_items
-                WHERE lower(title) LIKE ? OR lower(media_type) LIKE ? OR lower(coalesce(notes, '')) LIKE ?
-                ORDER BY updated_at DESC
-                LIMIT 20
-                """,
-                (like, like, like),
-            )
-        ]
-    shared = search_shared_memory(query)
+    service = _require_service()
+    shared = shared_memory.search_shared_memory(query)
+    runs = []
+    claims = []
+    leisure_items = []
+    for result in shared["results"]:
+        memory = result["memory"]
+        kind = memory.get("metadata", {}).get("legacy_kind")
+        if kind == "research_run":
+            runs.append(_run_record(memory))
+        elif kind == "claim":
+            claims.append(_claim_record(memory))
+        elif kind == "leisure_item":
+            leisure_items.append(_leisure_record(memory))
+    tasks = [
+        _task_record(task)
+        for task in service.list_tasks(limit=500)
+        if task.get("metadata", {}).get("legacy_kind") == "task"
+        and _matches_query(query, task["title"], task["intent"], task.get("metadata", {}).get("notes"))
+    ][:20]
+    leisure_matches = [
+        item
+        for item in list_leisure_items()
+        if _matches_query(query, item["title"], item["media_type"], item.get("notes"))
+    ][:20]
     return {
         "query": query,
         "results": shared["results"],
@@ -544,5 +753,5 @@ def search_memory(query: str) -> dict[str, Any]:
         "runs": runs,
         "claims": claims,
         "tasks": tasks,
-        "leisure_items": leisure_items,
+        "leisure_items": leisure_matches or leisure_items,
     }
