@@ -45,6 +45,7 @@ class PersonalAgentRuntime:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_entities()
         self._recover_interrupted_runs()
+        self._restart_paused_runs()
 
     def _ensure_entities(self) -> None:
         self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Direct Codex runner")
@@ -78,7 +79,13 @@ class PersonalAgentRuntime:
         )
         return IntakeResult(task=task, memory_context=memory_context)
 
-    def start_task(self, task_id: str, cwd: str, prompt_override: str | None = None) -> dict[str, Any]:
+    def start_task(
+        self,
+        task_id: str,
+        cwd: str,
+        prompt_override: str | None = None,
+        execution_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         task = self.service.get_task(task_id)
         if task.get("status") != "draft":
             raise ValueError(f"Task {task_id} is not in draft state")
@@ -142,6 +149,7 @@ class PersonalAgentRuntime:
                         "stderr_path": str(stderr_path),
                         "output_path": str(output_path),
                         "permission_mode": "danger-full-access",
+                        **dict(execution_updates or {}),
                     }
                 },
             ),
@@ -196,7 +204,40 @@ class PersonalAgentRuntime:
         bundle["latest_artifact"] = latest_artifact
         return bundle
 
-    def stop(self) -> None:
+    def pause_running_tasks(self, reason: str = "Daemon restart requested") -> dict[str, Any]:
+        paused_runs: list[str] = []
+        for run in self.service.list_task_runs(status="running", limit=200):
+            task = self.service.get_task(run["task_id"])
+            execution = dict(task.get("metadata", {}).get("execution") or {})
+            self.service.finish_task_run(
+                run["id"],
+                status="paused",
+                result_summary="Paused before daemon shutdown",
+                error_message=reason,
+            )
+            self.service.update_task(
+                task["id"],
+                status="draft",
+                blocked_reason=None,
+                requires_human_input=False,
+                metadata=self._merged_task_metadata(
+                    task,
+                    {
+                        "execution": {
+                            **execution,
+                            "auto_restart_on_daemon_start": True,
+                            "paused_run_id": run["id"],
+                            "paused_reason": reason,
+                        }
+                    },
+                ),
+            )
+            paused_runs.append(run["id"])
+        return {"paused_runs": paused_runs, "count": len(paused_runs)}
+
+    def stop(self, pause_running: bool = False, reason: str = "Daemon shutdown requested") -> None:
+        if pause_running:
+            self.pause_running_tasks(reason)
         with self._process_lock:
             active = list(self._processes.values())
         for state in active:
@@ -213,6 +254,11 @@ class PersonalAgentRuntime:
         finally:
             stdout_handle.close()
             stderr_handle.close()
+        current_run = self.service.get_task_run(run_id)
+        if current_run.get("status") != "running":
+            with self._process_lock:
+                self._processes.pop(run_id, None)
+            return
         task = self.service.get_task(state.task_id)
         markdown = self._read_file(state.output_path)
         stdout_text = self._read_file(state.stdout_path)
@@ -284,21 +330,57 @@ class PersonalAgentRuntime:
     def _recover_interrupted_runs(self) -> None:
         running_runs = self.service.list_task_runs(status="running", limit=200)
         for run in running_runs:
+            task = self.service.get_task(run["task_id"])
+            execution = dict(task.get("metadata", {}).get("execution") or {})
             self.service.finish_task_run(
                 run["id"],
-                status="failed",
+                status="paused",
                 result_summary="Recovered interrupted run after daemon restart",
                 error_message="Daemon restarted before Codex finished",
             )
-            task = self.service.get_task(run["task_id"])
             if task.get("status") == "in_progress":
                 self.service.update_task(
                     task["id"],
-                    status="failed",
+                    status="draft",
                     blocked_reason=None,
                     requires_human_input=False,
-                    metadata=self._merged_task_metadata(task, {"execution": {**dict(task.get("metadata", {}).get("execution") or {}), "recovered_run_id": run["id"]}}),
+                    metadata=self._merged_task_metadata(
+                        task,
+                        {
+                            "execution": {
+                                **execution,
+                                "auto_restart_on_daemon_start": True,
+                                "recovered_run_id": run["id"],
+                                "paused_run_id": run["id"],
+                                "paused_reason": "Daemon restarted before Codex finished",
+                            }
+                        },
+                    ),
                 )
+
+    def _restart_paused_runs(self) -> None:
+        tasks = self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, status="draft", limit=200)
+        for task in tasks:
+            execution = dict(task.get("metadata", {}).get("execution") or {})
+            if not execution.get("auto_restart_on_daemon_start"):
+                continue
+            cwd = execution.get("cwd") or execution.get("suggested_cwd")
+            if not isinstance(cwd, str) or not cwd.strip():
+                continue
+            prompt = execution.get("prompt_preview")
+            try:
+                self.start_task(
+                    task["id"],
+                    cwd,
+                    prompt if isinstance(prompt, str) else None,
+                    execution_updates={
+                        "auto_restart_on_daemon_start": False,
+                        "resumed_from_run_id": execution.get("paused_run_id") or execution.get("recovered_run_id"),
+                        "last_resume_reason": execution.get("paused_reason") or "daemon startup",
+                    },
+                )
+            except ValueError:
+                continue
 
     def _decorate_task(self, task: dict[str, Any], latest_run: dict[str, Any] | None) -> dict[str, Any]:
         decorated = dict(task)

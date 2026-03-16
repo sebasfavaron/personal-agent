@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timezone
@@ -349,10 +350,11 @@ class PersonalAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid cwd"):
             runtime.start_task(intake.task["id"], "/path/does/not/exist")
 
-    def test_runtime_recovers_interrupted_runs_as_failed(self) -> None:
+    def test_runtime_recovers_interrupted_runs_and_restarts_them(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
+        fake_repo_dir = self._fake_repo_dir()
         task = runtime.service.create_task(
             title="Interrupted work",
             intent="Resume after restart",
@@ -361,17 +363,85 @@ class PersonalAgentTests(unittest.TestCase):
             project_id="proj_personal_agent",
             repo_id="repo_ai_dev_workflow",
             owner_agent="personal-agent",
-            metadata={"execution": {"cwd": "/Users/sebas/Code/ai-dev-workflow"}},
+            metadata={"execution": {"cwd": fake_repo_dir, "prompt_preview": "Resume after restart"}},
         )
-        run = runtime.service.start_task_run(task["id"], "personal-agent", input_payload={"cwd": "/Users/sebas/Code/ai-dev-workflow"})
+        run = runtime.service.start_task_run(task["id"], "personal-agent", input_payload={"cwd": fake_repo_dir})
 
-        recovered = PersonalAgentRuntime()
-        updated_task = recovered.service.get_task(task["id"])
+        class FakePopen:
+            def __init__(self, command, stdout, stderr, text):
+                del text
+                self.pid = 2468
+                output_path = Path(command[command.index("-o") + 1])
+                output_path.write_text("# Summary\n\nRecovered.\n", encoding="utf-8")
+                stdout.write("stdout ok\n")
+                stdout.flush()
+                stderr.flush()
+                self._returncode = 0
+
+            def wait(self):
+                return self._returncode
+
+            def poll(self):
+                return self._returncode
+
+            def terminate(self):
+                self._returncode = -15
+
+        with patch("personal_agent.runtime.subprocess.Popen", FakePopen):
+            recovered = PersonalAgentRuntime()
+
+        updated_task = self._wait_for_task_status(recovered, task["id"], "completed")
+        runs = recovered.service.list_task_runs(task_id=task["id"], limit=5)
         updated_run = recovered.service.get_task_run(run["id"])
 
-        self.assertEqual(updated_run["status"], "failed")
-        self.assertEqual(updated_task["status"], "failed")
+        self.assertEqual(updated_run["status"], "paused")
+        self.assertEqual(updated_task["status"], "completed")
         self.assertEqual(updated_task["metadata"]["execution"]["recovered_run_id"], run["id"])
+        self.assertEqual(updated_task["metadata"]["execution"]["resumed_from_run_id"], run["id"])
+        self.assertEqual(runs[0]["status"], "succeeded")
+
+    def test_pause_running_tasks_leaves_restartable_draft_and_watcher_does_not_fail_it(self) -> None:
+        from personal_agent.runtime import PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        intake = runtime.intake("Implement the fix in ai-dev-workflow")
+        fake_repo_dir = self._fake_repo_dir()
+        terminated = threading.Event()
+
+        class FakePopen:
+            def __init__(self, command, stdout, stderr, text):
+                del command, text
+                self.pid = 8642
+                self._returncode = None
+                stdout.write("working\n")
+                stdout.flush()
+                stderr.flush()
+
+            def wait(self):
+                terminated.wait(timeout=1.0)
+                return -15 if self._returncode is None else self._returncode
+
+            def poll(self):
+                return self._returncode
+
+            def terminate(self):
+                self._returncode = -15
+                terminated.set()
+
+        with patch("personal_agent.runtime.subprocess.Popen", FakePopen):
+            payload = runtime.start_task(intake.task["id"], fake_repo_dir)
+            pause_payload = runtime.pause_running_tasks("test restart")
+            runtime.stop()
+
+        time.sleep(0.05)
+        task = runtime.service.get_task(intake.task["id"])
+        run = runtime.service.get_task_run(payload["run"]["id"])
+
+        self.assertEqual(pause_payload["count"], 1)
+        self.assertEqual(run["status"], "paused")
+        self.assertEqual(task["status"], "draft")
+        self.assertTrue(task["metadata"]["execution"]["auto_restart_on_daemon_start"])
+        self.assertEqual(runtime.service.list_artifacts(task_id=intake.task["id"], limit=5), [])
 
     def test_dashboard_snapshot_groups_drafts_running_failed_and_results(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime

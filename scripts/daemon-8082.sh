@@ -153,6 +153,10 @@ logs_daemon() {
 }
 
 restart_daemon() {
+  (
+    cd "$ROOT"
+    python3 scripts/personal.py pause-running --reason "daemon-8082.sh restart on ${HOST}:${PORT}"
+  ) || true
   stop_daemon || true
   start_daemon
 }
