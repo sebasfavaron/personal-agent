@@ -221,6 +221,21 @@ class FakeOperationalMemoryService(FakeMemoryService):
         handoff["updated_at"] = self._now()
         return dict(handoff)
 
+    def update_handoff_status(
+        self,
+        handoff_id: str,
+        *,
+        status: str,
+        result_summary: str | None = None,
+        error_message: str | None = None,
+    ) -> dict:
+        handoff = self.handoffs[handoff_id]
+        handoff["status"] = status
+        handoff["result_summary"] = result_summary
+        handoff["error_message"] = error_message
+        handoff["updated_at"] = self._now()
+        return dict(handoff)
+
     def start_task_run(self, task_id: str, agent_id: str, input_payload: dict | None = None) -> dict:
         run_id = self._next_id("run")
         now = self._now()
@@ -232,6 +247,8 @@ class FakeOperationalMemoryService(FakeMemoryService):
             "input_payload": dict(input_payload or {}),
             "result_summary": None,
             "error_message": None,
+            "started_at": now,
+            "completed_at": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -243,6 +260,7 @@ class FakeOperationalMemoryService(FakeMemoryService):
         run["status"] = status
         run["result_summary"] = result_summary
         run["error_message"] = error_message
+        run["completed_at"] = self._now()
         run["updated_at"] = self._now()
         return dict(run)
 
@@ -250,6 +268,8 @@ class FakeOperationalMemoryService(FakeMemoryService):
         items = list(self.task_runs.values())
         if task_id is not None:
             items = [item for item in items if item["task_id"] == task_id]
+        if "status" in kwargs and kwargs["status"] is not None:
+            items = [item for item in items if item["status"] == kwargs["status"]]
         items.sort(key=lambda item: item["created_at"], reverse=True)
         return [dict(item) for item in items[:limit]]
 
@@ -299,6 +319,16 @@ class FakeOperationalMemoryService(FakeMemoryService):
 
     def context_for(self, **kwargs) -> dict:
         return {"active_decisions": [], "recent_episodes": [], "open_questions": []}
+
+    def task_bundle(self, task_id: str) -> dict:
+        return {
+            "task": self.get_task(task_id),
+            "children": [dict(task) for task in self.tasks.values() if task.get("parent_task_id") == task_id],
+            "runs": self.list_task_runs(task_id=task_id, limit=100),
+            "artifacts": self.list_artifacts(task_id=task_id, limit=100),
+            "handoffs": [dict(item) for item in self.handoffs.values() if item["task_id"] == task_id],
+            "approvals": [dict(item) for item in self.approvals.values() if item["task_id"] == task_id],
+        }
 
 
 class PersonalAgentTests(unittest.TestCase):
@@ -548,7 +578,18 @@ class PersonalAgentTests(unittest.TestCase):
     def test_router_routes_company_and_code_requests(self) -> None:
         from personal_agent.router import route_request
 
-        planned = route_request("Necesito avanzar Ballbox con un bug en el repo de pagos")
+        with patch(
+            "personal_agent.router.build_route_payload",
+            return_value={
+                "primary_agent": "company",
+                "secondary_agent": "code",
+                "reason": "Ballbox business context with repo work",
+                "delegation_target": "ballbox-company-agent",
+                "planning_source": "codex",
+                "codex_instruction": "",
+            },
+        ):
+            planned = route_request("Necesito avanzar Ballbox con un bug en el repo de pagos")
         self.assertEqual(planned["primary_agent"], "company")
         self.assertEqual(planned["secondary_agent"], "code")
 
@@ -907,13 +948,20 @@ class PersonalAgentTests(unittest.TestCase):
         artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=20)
 
         self.assertTrue(payload["processed"])
-        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(updated["status"], "in_progress")
+        self.assertTrue(updated["metadata"]["awaiting_handoff_result"])
         self.assertEqual(len(payload["processed"][0]["actions"]), 3)
         self.assertTrue(any(item["parent_task_id"] == task["id"] for item in children))
         self.assertTrue(any(handoff["task_id"] == task["id"] for handoff in handoffs))
         self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
+        self.assertTrue(
+            any(
+                artifact["artifact_type"] == "report" and artifact["metadata"].get("classification") == "intermediate"
+                for artifact in artifacts
+            )
+        )
 
-    def test_runtime_dispatch_handoff_marks_it_completed_and_records_artifact(self) -> None:
+    def test_runtime_dispatch_handoff_acceptance_keeps_task_in_progress(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
@@ -941,10 +989,65 @@ class PersonalAgentTests(unittest.TestCase):
             result = runtime.process_once()
 
         updated_handoffs = runtime.service.list_handoffs(limit=10)
+        updated_task = runtime.service.get_task(task["id"])
         artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=10)
         self.assertEqual(result["processed"][0]["kind"], "handoff")
         self.assertEqual(updated_handoffs[0]["status"], "accepted")
+        self.assertEqual(updated_task["status"], "in_progress")
+        self.assertTrue(updated_task["metadata"]["awaiting_handoff_result"])
         self.assertTrue(any(item["artifact_type"] == "handoff_result" for item in artifacts))
+
+    def test_runtime_recovers_interrupted_runs_and_reopens_task(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Recover me",
+            intent="Was running when daemon stopped",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="in_progress",
+            metadata={"route": {"primary_agent": "personal"}},
+        )
+        run = runtime.service.start_task_run(task["id"], PERSONAL_AGENT_ID, input_payload={"mode": "codex-agentic"})
+
+        runtime._recover_interrupted_runs()
+
+        updated_task = runtime.service.get_task(task["id"])
+        updated_run = runtime.service.list_task_runs(task_id=task["id"], limit=1)[0]
+        artifacts = runtime.service.list_artifacts(task_id=task["id"], limit=10)
+        self.assertEqual(updated_task["status"], "open")
+        self.assertEqual(updated_task["metadata"]["last_interrupted_run_id"], run["id"])
+        self.assertEqual(updated_run["status"], "interrupted")
+        self.assertTrue(any(item["metadata"].get("outcome") == "interrupted" for item in artifacts))
+
+    def test_runtime_reopens_completed_task_with_nonterminal_accepted_handoff(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+
+        runtime = PersonalAgentRuntime()
+        task = runtime.service.create_task(
+            title="Parent closed too early",
+            intent="Should await downstream result",
+            owner_agent=PERSONAL_AGENT_ID,
+            status="completed",
+            metadata={"route": {"primary_agent": "code", "delegation_target": "ai-dev-workflow"}},
+        )
+        runtime.service.create_handoff(
+            task_id=task["id"],
+            from_agent=PERSONAL_AGENT_ID,
+            to_agent="ai-dev-workflow",
+            reason="Need repo execution",
+            payload={"task_id": task["id"]},
+            metadata={"created_by_run_id": "run_old"},
+        )
+        handoff_id = next(iter(runtime.service.handoffs))
+        runtime.service.update_handoff_status(handoff_id, status="accepted", result_summary="Accepted downstream")
+
+        runtime._reconcile_nonterminal_handoffs()
+
+        updated = runtime.service.get_task(task["id"])
+        self.assertEqual(updated["status"], "in_progress")
+        self.assertTrue(updated["metadata"]["awaiting_handoff_result"])
+        self.assertEqual(updated["metadata"]["awaiting_handoff_id"], handoff_id)
 
     def test_runtime_resolve_preference_blocker_uses_memory_when_available(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
@@ -1017,6 +1120,7 @@ class PersonalAgentTests(unittest.TestCase):
             title="Delivered report",
             content="Done.",
             source_ref=PERSONAL_AGENT_ID,
+            metadata={"classification": "deliverable"},
         )
         approval = runtime.service.create_approval(
             task_id=blocked["id"],
@@ -1039,6 +1143,7 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(active_row["execution_state"], "running")
         self.assertTrue(active_row["has_started"])
         self.assertEqual(active_row["latest_run"]["status"], "running")
+        self.assertEqual(payload["current_run"]["task_id"], active["id"])
         self.assertEqual(queued_row["execution_state"], "not_started")
         self.assertFalse(queued_row["has_started"])
         self.assertEqual(blocked_row["pending_approval"]["id"], approval["id"])
@@ -1110,7 +1215,9 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(resumed["resume"]["status"], "completed")
         self.assertTrue(any(artifact["artifact_type"] == "approval_resolution" for artifact in artifacts))
         self.assertTrue(any(artifact["artifact_type"] == "execution_state" for artifact in artifacts))
-        self.assertTrue(any(item["parent_task_id"] == intake.task["id"] for item in followups))
+        self.assertFalse(any(item["parent_task_id"] == intake.task["id"] for item in followups))
+        absorbed = [item for item in runtime.service.list_tasks(owner_agent="personal-agent", limit=20) if item["parent_task_id"] == intake.task["id"]]
+        self.assertTrue(any(item["metadata"].get("subtask_disposition") == "absorbed" for item in absorbed))
 
     def test_daemon_http_api_covers_status_intake_blocker_and_approval(self) -> None:
         from personal_agent.daemon import PersonalAgentHandler
@@ -1142,7 +1249,21 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertIn("summary", payload)
 
-        status_code, intake_payload = invoke("do_POST", "/api/intake", {"input": "Handle a local task"})
+        intake_plan = {
+            "primary_agent": "personal",
+            "secondary_agent": None,
+            "reason": "local orchestration",
+            "delegation_target": None,
+            "planning_source": "codex",
+            "codex_instruction": "Handle locally.",
+            "subtasks": [
+                {"title": "Clarify scope", "detail": "Understand the task."},
+                {"title": "Run worker", "detail": "Let codex decide next move."},
+                {"title": "Summarize result", "detail": "Return the final report."},
+            ],
+        }
+        with patch("personal_agent.runtime.build_intake_plan", return_value=intake_plan):
+            status_code, intake_payload = invoke("do_POST", "/api/intake", {"input": "Handle a local task"})
         self.assertEqual(status_code, 201)
         task_id = intake_payload["task"]["id"]
         artifact_id = intake_payload["artifacts"][0]["id"]
@@ -1150,6 +1271,10 @@ class PersonalAgentTests(unittest.TestCase):
         status_code, artifact_payload = invoke("do_GET", f"/api/artifacts/{artifact_id}")
         self.assertEqual(status_code, 200)
         self.assertEqual(artifact_payload["id"], artifact_id)
+
+        status_code, task_payload = invoke("do_GET", f"/api/tasks/{task_id}")
+        self.assertEqual(status_code, 200)
+        self.assertEqual(task_payload["task"]["id"], task_id)
 
         runtime.service.update_task(task_id, status="blocked", blocked_reason="Need input", requires_human_input=True)
         status_code, blocker_payload = invoke("do_POST", f"/api/tasks/{task_id}/blocker-response", {"response": "Extra context"})

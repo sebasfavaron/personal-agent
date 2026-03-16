@@ -5,6 +5,7 @@ import re
 import subprocess
 import tempfile
 import threading
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ SYSTEM_REPO_ID = "repo_personal_agent"
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
 AI_DEV_WORKFLOW_ROOT = PERSONAL_ROOT.parent / "ai-dev-workflow"
 BALLBOX_COMPANY_ROOT = PERSONAL_ROOT.parent / "ballbox-company-agent"
+NON_TERMINAL_HANDOFF_STATUSES = {"pending", "accepted", "in_progress"}
 
 
 @dataclass(slots=True)
@@ -39,6 +41,8 @@ class PersonalAgentRuntime:
         self.service = service
         self._ensure_entities()
         self._stop = threading.Event()
+        self._recover_interrupted_runs()
+        self._reconcile_nonterminal_handoffs()
 
     def _ensure_entities(self) -> None:
         self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Front door and orchestration runtime")
@@ -89,7 +93,7 @@ class PersonalAgentRuntime:
                 title="Normalized Intent",
                 content=self._normalized_intent(text, route, memory_context),
                 source_ref=PERSONAL_AGENT_ID,
-                metadata={"route": route},
+                metadata={"route": route, "classification": "system"},
             ),
             self.service.create_artifact(
                 task_id=task["id"],
@@ -97,7 +101,7 @@ class PersonalAgentRuntime:
                 title="Execution Plan",
                 content=self._plan_artifact(text, route, subtasks),
                 source_ref=PERSONAL_AGENT_ID,
-                metadata={"route": route},
+                metadata={"route": route, "classification": "intermediate"},
             ),
         ]
         handoff = None
@@ -120,6 +124,10 @@ class PersonalAgentRuntime:
 
     def dashboard_snapshot(self) -> dict[str, Any]:
         snapshot = self.service.dashboard_snapshot(owner_agent=PERSONAL_AGENT_ID)
+        accepted_handoffs = self.service.list_handoffs(status="accepted", limit=20)
+        snapshot["pending_handoffs"] = snapshot.get("pending_handoffs", []) + [
+            handoff for handoff in accepted_handoffs if handoff["to_agent"] in {"ai-dev-workflow", "ballbox-company-agent"}
+        ]
         snapshot["active_tasks"] = [task for task in snapshot.get("active_tasks", []) if task.get("parent_task_id") is None]
         snapshot["blocked_tasks"] = [task for task in snapshot.get("blocked_tasks", []) if task.get("parent_task_id") is None]
         task_ids = [task["id"] for key in ("active_tasks", "blocked_tasks") for task in snapshot.get(key, [])]
@@ -131,7 +139,7 @@ class PersonalAgentRuntime:
         task_counts: dict[str, int] = {}
         for subtask in self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=200):
             parent_id = subtask.get("parent_task_id")
-            if parent_id:
+            if parent_id and subtask.get("status") != "completed":
                 task_counts[parent_id] = task_counts.get(parent_id, 0) + 1
         for key in ("active_tasks", "blocked_tasks"):
             snapshot[key] = [
@@ -154,11 +162,26 @@ class PersonalAgentRuntime:
             "started_task_count": sum(1 for task in snapshot.get("active_tasks", []) if task["has_started"]),
             "queued_task_count": sum(1 for task in snapshot.get("active_tasks", []) if not task["has_started"]),
         }
+        snapshot["current_run"] = self._current_run_snapshot(snapshot)
         snapshot["recent_deliverables"] = self._recent_deliverables(limit=8)
         snapshot["memory_context"] = self.service.context_for(
             project=PERSONAL_PROJECT_ID, repo=SYSTEM_REPO_ID, agent=PERSONAL_AGENT_ID, task="personal front door"
         )
         return snapshot
+
+    def task_bundle(self, task_id: str) -> dict[str, Any]:
+        bundle = self.service.task_bundle(task_id)
+        task = bundle["task"]
+        latest_run = bundle["runs"][0] if bundle["runs"] else None
+        pending_approval = next((item for item in bundle["approvals"] if item["status"] == "pending"), None)
+        unresolved_children = [item for item in bundle["children"] if item.get("status") != "completed"]
+        bundle["task"] = self._decorate_task_snapshot(
+            task,
+            latest_run=latest_run,
+            pending_approval=pending_approval,
+            open_subtask_count=len(unresolved_children),
+        )
+        return bundle
 
     def respond_to_blocker(self, task_id: str, response: str) -> dict[str, Any]:
         artifact = self.service.create_artifact(
@@ -167,13 +190,17 @@ class PersonalAgentRuntime:
             title="Human blocker response",
             content=response,
             source_ref=PERSONAL_AGENT_ID,
+            metadata={"classification": "system"},
         )
         task = self.service.update_task(
             task_id,
             status="open",
             blocked_reason=None,
             requires_human_input=False,
-            metadata={"resolved_by": "human", "response_artifact_id": artifact["id"]},
+            metadata=self._merged_task_metadata(
+                self.service.get_task(task_id),
+                {"resolved_by": "human", "response_artifact_id": artifact["id"]},
+            ),
         )
         return {"task": task, "artifact": artifact}
 
@@ -188,7 +215,7 @@ class PersonalAgentRuntime:
             title=f"Approval {normalized}",
             content=resolution_note.strip() or f"Approval {normalized}.",
             source_ref=PERSONAL_AGENT_ID,
-            metadata={"approval_id": approval_id, "status": normalized},
+            metadata={"approval_id": approval_id, "status": normalized, "classification": "system"},
         )
         task_metadata = {
             "approval_id": approval_id,
@@ -201,7 +228,7 @@ class PersonalAgentRuntime:
                 status="blocked",
                 blocked_reason=resolution_note.strip() or "Approval rejected",
                 requires_human_input=False,
-                metadata=task_metadata,
+                metadata=self._merged_task_metadata(self.service.get_task(approval["task_id"]), task_metadata),
             )
             return {"approval": approval, "artifact": artifact, "task": task, "resume": None}
         task = self.service.update_task(
@@ -209,12 +236,14 @@ class PersonalAgentRuntime:
             status="open",
             blocked_reason=None,
             requires_human_input=False,
-            metadata=task_metadata,
+            metadata=self._merged_task_metadata(self.service.get_task(approval["task_id"]), task_metadata),
         )
         resume = self._run_task_with_codex(task)
         return {"approval": approval, "artifact": artifact, "task": self.service.get_task(task["id"]), "resume": resume}
 
     def process_once(self) -> dict[str, Any]:
+        self._recover_interrupted_runs()
+        self._reconcile_nonterminal_handoffs()
         processed: list[dict[str, Any]] = []
         for handoff in self.service.list_handoffs(status="pending", limit=20):
             processed.append(self._dispatch_handoff(handoff))
@@ -252,14 +281,14 @@ class PersonalAgentRuntime:
             title="Resolved from memory",
             content=f"Resolved blocker using memory {chosen['id']}: {chosen['summary']}",
             source_ref=PERSONAL_AGENT_ID,
-            metadata={"memory_id": chosen["id"]},
+            metadata={"memory_id": chosen["id"], "classification": "system"},
         )
         return self.service.update_task(
             task_id,
             status="open",
             blocked_reason=None,
             requires_human_input=False,
-            metadata={"resolved_by_memory_id": chosen["id"]},
+            metadata=self._merged_task_metadata(self.service.get_task(task_id), {"resolved_by_memory_id": chosen["id"]}),
         )
 
     def _dispatch_handoff(self, handoff: dict[str, Any]) -> dict[str, Any]:
@@ -297,7 +326,13 @@ class PersonalAgentRuntime:
         result = subprocess.run(command, capture_output=True, text=True, check=True)
         parsed = json.loads(result.stdout)
         status = parsed.get("status", "accepted")
-        self.service.complete_handoff(handoff["id"], status=status, result_summary=parsed.get("summary"))
+        is_terminal = status in {"completed", "blocked", "failed"}
+        self._set_handoff_status(
+            handoff["id"],
+            status=status,
+            result_summary=parsed.get("summary"),
+            terminal=is_terminal,
+        )
         self.service.create_artifact(
             task_id=handoff["task_id"],
             artifact_type="handoff_result",
@@ -305,8 +340,42 @@ class PersonalAgentRuntime:
             content=result.stdout.strip(),
             fmt="json",
             source_ref=handoff["to_agent"],
-            metadata={"handoff_id": handoff["id"]},
+            metadata={"handoff_id": handoff["id"], "classification": "system"},
         )
+        task = self.service.get_task(handoff["task_id"])
+        if status == "accepted":
+            self.service.update_task(
+                task["id"],
+                status="in_progress",
+                blocked_reason=None,
+                requires_human_input=False,
+                metadata=self._merged_task_metadata(
+                    task,
+                    {
+                        "awaiting_handoff_result": True,
+                        "awaiting_handoff_id": handoff["id"],
+                        "awaiting_handoff_agent": handoff["to_agent"],
+                        "handoff_status": status,
+                    },
+                ),
+            )
+        elif status == "completed":
+            self._complete_task_after_handoff(task, handoff, parsed.get("summary"))
+        elif status in {"blocked", "failed"}:
+            self.service.update_task(
+                task["id"],
+                status="blocked",
+                blocked_reason=parsed.get("summary") or f"Handoff {status}",
+                requires_human_input=(status == "blocked"),
+                metadata=self._merged_task_metadata(
+                    task,
+                    {
+                        "awaiting_handoff_result": False,
+                        "awaiting_handoff_id": handoff["id"],
+                        "handoff_status": status,
+                    },
+                ),
+            )
         return {"kind": "handoff", "handoff_id": handoff["id"], "status": status}
 
     def _run_task_with_codex(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -339,7 +408,7 @@ class PersonalAgentRuntime:
                 status="blocked",
                 blocked_reason=str(exc),
                 requires_human_input=True,
-                metadata={"task_run_id": run["id"]},
+                metadata=self._merged_task_metadata(task, {"task_run_id": run["id"]}),
             )
             return {"kind": "task", "task_id": task["id"], "status": "blocked"}
         except subprocess.CalledProcessError as exc:
@@ -349,7 +418,7 @@ class PersonalAgentRuntime:
                 status="blocked",
                 blocked_reason=exc.stderr.strip() or "codex execution failed",
                 requires_human_input=True,
-                metadata={"task_run_id": run["id"]},
+                metadata=self._merged_task_metadata(task, {"task_run_id": run["id"]}),
             )
             return {"kind": "task", "task_id": task["id"], "status": "blocked"}
         finally:
@@ -440,15 +509,20 @@ class PersonalAgentRuntime:
             raise ValueError("Task decision missing report_markdown")
         summary = str(decision.get("summary") or "").strip() or "Codex task decision"
         title = str(decision.get("report_title") or "Worker report").strip()
+        action_results = self._apply_actions(task, run, decision.get("actions"))
+        handoff_actions = [item for item in action_results if item.get("type") == "create_handoff"]
         artifact = self.service.create_artifact(
             task_id=task["id"],
             artifact_type="report" if outcome == "complete" else "decision",
             title=title,
             content=report,
             source_ref=PERSONAL_AGENT_ID,
-            metadata={"task_run_id": run["id"], "outcome": outcome},
+            metadata={
+                "task_run_id": run["id"],
+                "outcome": outcome,
+                "classification": "deliverable" if outcome == "complete" and not handoff_actions else "intermediate",
+            },
         )
-        action_results = self._apply_actions(task, run, decision.get("actions"))
         self.service.create_artifact(
             task_id=task["id"],
             artifact_type="execution_state",
@@ -465,14 +539,37 @@ class PersonalAgentRuntime:
             ),
             fmt="json",
             source_ref=PERSONAL_AGENT_ID,
-            metadata={"task_run_id": run["id"], "outcome": outcome},
+            metadata={"task_run_id": run["id"], "outcome": outcome, "classification": "system"},
         )
         if outcome == "complete":
             self.service.finish_task_run(run["id"], status="completed", result_summary=summary)
+            if handoff_actions:
+                self.service.update_task(
+                    task["id"],
+                    status="in_progress",
+                    blocked_reason=None,
+                    requires_human_input=False,
+                    metadata=self._merged_task_metadata(
+                        task,
+                        {
+                            "report_artifact_id": artifact["id"],
+                            "task_run_id": run["id"],
+                            "action_results": action_results,
+                            "awaiting_handoff_result": True,
+                            "awaiting_handoff_ids": [item["handoff_id"] for item in handoff_actions],
+                            "awaiting_handoff_agent": handoff_actions[0]["to_agent"],
+                        },
+                    ),
+                )
+                return {"kind": "task", "task_id": task["id"], "status": "in_progress", "actions": action_results}
+            self._absorb_open_subtasks(task["id"], run["id"])
             self.service.update_task(
                 task["id"],
                 status="completed",
-                metadata={"report_artifact_id": artifact["id"], "task_run_id": run["id"], "action_results": action_results},
+                metadata=self._merged_task_metadata(
+                    task,
+                    {"report_artifact_id": artifact["id"], "task_run_id": run["id"], "action_results": action_results},
+                ),
             )
             self.service.ingest(
                 {
@@ -498,7 +595,10 @@ class PersonalAgentRuntime:
                 status="blocked",
                 blocked_reason=blocker_reason,
                 requires_human_input=True,
-                metadata={"task_run_id": run["id"], "decision_artifact_id": artifact["id"], "action_results": action_results},
+                metadata=self._merged_task_metadata(
+                    task,
+                    {"task_run_id": run["id"], "decision_artifact_id": artifact["id"], "action_results": action_results},
+                ),
             )
             return {"kind": "task", "task_id": task["id"], "status": "blocked", "actions": action_results}
         approval = decision.get("approval")
@@ -516,12 +616,15 @@ class PersonalAgentRuntime:
             status="blocked",
             blocked_reason="Awaiting approval",
             requires_human_input=True,
-            metadata={
-                "task_run_id": run["id"],
-                "decision_artifact_id": artifact["id"],
-                "approval_id": approval_record["id"],
-                "action_results": action_results,
-            },
+            metadata=self._merged_task_metadata(
+                task,
+                {
+                    "task_run_id": run["id"],
+                    "decision_artifact_id": artifact["id"],
+                    "approval_id": approval_record["id"],
+                    "action_results": action_results,
+                },
+            ),
         )
         return {
             "kind": "task",
@@ -589,7 +692,7 @@ class PersonalAgentRuntime:
                     title=title,
                     content=content,
                     source_ref=PERSONAL_AGENT_ID,
-                    metadata={"created_by_run_id": run["id"]},
+                    metadata={"created_by_run_id": run["id"], "classification": "intermediate"},
                 )
                 results.append({"type": action_type, "artifact_id": created["id"], "artifact_type": artifact_type})
                 continue
@@ -640,7 +743,8 @@ class PersonalAgentRuntime:
     def _recent_deliverables(self, limit: int = 8) -> list[dict[str, Any]]:
         deliverables: list[dict[str, Any]] = []
         for artifact in self.service.list_artifacts(limit=50):
-            if artifact.get("artifact_type") != "report":
+            classification = artifact.get("metadata", {}).get("classification")
+            if classification != "deliverable" and artifact.get("artifact_type") != "report":
                 continue
             task = self.service.get_task(artifact["task_id"])
             if task.get("parent_task_id") is not None:
@@ -659,6 +763,9 @@ class PersonalAgentRuntime:
         latest_run: dict[str, Any] | None,
         pending_approval: dict[str, Any] | None,
     ) -> str:
+        metadata = task.get("metadata", {})
+        if metadata.get("awaiting_handoff_result") and metadata.get("awaiting_handoff_agent"):
+            return f"Await handoff result from {metadata['awaiting_handoff_agent']}"
         if pending_approval is not None:
             return f"Resolve approval {pending_approval['id']}"
         if task["status"] == "blocked":
@@ -673,6 +780,170 @@ class PersonalAgentRuntime:
         if task["status"] == "in_progress":
             return "Review in-progress state"
         return "Ready for worker"
+
+    def _current_run_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        candidates = snapshot.get("active_tasks", []) + snapshot.get("blocked_tasks", [])
+        running = [task for task in candidates if task.get("execution_state") == "running" and task.get("latest_run")]
+        if running:
+            task = sorted(running, key=lambda item: item["latest_run"]["started_at"], reverse=True)[0]
+            return self._run_card(task)
+        started = [task for task in candidates if task.get("latest_run")]
+        if not started:
+            return None
+        task = sorted(started, key=lambda item: item["latest_run"]["started_at"], reverse=True)[0]
+        return self._run_card(task)
+
+    def _run_card(self, task: dict[str, Any]) -> dict[str, Any]:
+        latest_run = task["latest_run"]
+        return {
+            "task_id": task["id"],
+            "task_title": task["title"],
+            "task_status": task["status"],
+            "run_id": latest_run["id"],
+            "run_status": latest_run["status"],
+            "started_at": latest_run["started_at"],
+            "next_action": task["next_action"],
+            "open_subtask_count": task["open_subtask_count"],
+        }
+
+    def _merged_task_metadata(self, task: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(task.get("metadata") or {})
+        merged.update(updates)
+        return merged
+
+    def _absorb_open_subtasks(self, task_id: str, run_id: str) -> None:
+        for child in self.service.list_tasks(owner_agent=PERSONAL_AGENT_ID, limit=200):
+            if child.get("parent_task_id") != task_id or child.get("status") == "completed":
+                continue
+            self.service.update_task(
+                child["id"],
+                status="completed",
+                blocked_reason=None,
+                requires_human_input=False,
+                metadata=self._merged_task_metadata(
+                    child,
+                    {"subtask_disposition": "absorbed", "absorbed_by_run_id": run_id},
+                ),
+            )
+
+    def _complete_task_after_handoff(self, task: dict[str, Any], handoff: dict[str, Any], summary: str | None) -> None:
+        self._absorb_open_subtasks(task["id"], handoff.get("metadata", {}).get("created_by_run_id", ""))
+        self.service.update_task(
+            task["id"],
+            status="completed",
+            blocked_reason=None,
+            requires_human_input=False,
+            metadata=self._merged_task_metadata(
+                task,
+                {
+                    "awaiting_handoff_result": False,
+                    "awaiting_handoff_id": handoff["id"],
+                    "handoff_status": "completed",
+                    "handoff_summary": summary,
+                },
+            ),
+        )
+
+    def _recover_interrupted_runs(self) -> None:
+        running_runs = self.service.list_task_runs(status="running", limit=200)
+        for run in running_runs:
+            task = self.service.get_task(run["task_id"])
+            self.service.finish_task_run(
+                run["id"],
+                status="interrupted",
+                result_summary="Marked interrupted during runtime recovery.",
+                error_message="Daemon restarted before task run finished.",
+            )
+            self.service.create_artifact(
+                task_id=task["id"],
+                artifact_type="execution_state",
+                title="Recovered interrupted run",
+                content=json.dumps(
+                    {
+                        "run_id": run["id"],
+                        "outcome": "interrupted",
+                        "summary": "Recovered stale running task after daemon restart.",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                fmt="json",
+                source_ref=PERSONAL_AGENT_ID,
+                metadata={"task_run_id": run["id"], "outcome": "interrupted", "classification": "system"},
+            )
+            if task.get("status") == "completed":
+                continue
+            if task.get("requires_human_input"):
+                continue
+            next_status = "in_progress" if task.get("metadata", {}).get("awaiting_handoff_result") else "open"
+            self.service.update_task(
+                task["id"],
+                status=next_status,
+                blocked_reason=None,
+                requires_human_input=False,
+                metadata=self._merged_task_metadata(task, {"last_interrupted_run_id": run["id"]}),
+            )
+
+    def _reconcile_nonterminal_handoffs(self) -> None:
+        for handoff in self.service.list_handoffs(status="accepted", limit=200):
+            if handoff.get("to_agent") not in {"ai-dev-workflow", "ballbox-company-agent"}:
+                continue
+            task = self.service.get_task(handoff["task_id"])
+            if task.get("metadata", {}).get("handoff_status") == "completed":
+                continue
+            if task.get("status") == "in_progress" and task.get("metadata", {}).get("awaiting_handoff_result"):
+                continue
+            self.service.update_task(
+                task["id"],
+                status="in_progress",
+                blocked_reason=None,
+                requires_human_input=False,
+                metadata=self._merged_task_metadata(
+                    task,
+                    {
+                        "awaiting_handoff_result": True,
+                        "awaiting_handoff_id": handoff["id"],
+                        "awaiting_handoff_agent": handoff["to_agent"],
+                        "handoff_status": "accepted",
+                    },
+                ),
+            )
+
+    def _set_handoff_status(
+        self,
+        handoff_id: str,
+        *,
+        status: str,
+        result_summary: str | None = None,
+        error_message: str | None = None,
+        terminal: bool,
+    ) -> None:
+        if terminal:
+            self.service.complete_handoff(
+                handoff_id,
+                status=status,
+                result_summary=result_summary,
+                error_message=error_message,
+            )
+            return
+        if hasattr(self.service, "update_handoff_status"):
+            self.service.update_handoff_status(
+                handoff_id,
+                status=status,
+                result_summary=result_summary,
+                error_message=error_message,
+            )
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self.service.store.connection() as conn:
+            conn.execute(
+                """
+                UPDATE handoffs
+                SET status = ?, result_summary = ?, error_message = ?, updated_at = ?, completed_at = NULL
+                WHERE id = ?
+                """,
+                (status, result_summary, error_message, now, handoff_id),
+            )
 
     def _normalized_intent(self, text: str, route: dict[str, Any], memory_context: list[dict[str, Any]]) -> str:
         lines = [

@@ -111,8 +111,8 @@ Operator note:
 - `personal.py` accepts `--json` before or after subcommands
 - dashboard loads at `:8082`
 - shared DB contains tasks, runs, artifacts, handoffs
-- `ai-dev-workflow` `run-task` returns accepted JSON
-- `ballbox-company-agent` `run-task` returns accepted JSON
+- downstream specialist agents may return non-terminal `accepted` handoff results first
+- parent tasks must not be marked complete until an explicit downstream terminal result arrives
 - `codex exec` is available on PATH
 
 ## Recovery / Backup

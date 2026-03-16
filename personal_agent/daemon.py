@@ -79,6 +79,10 @@ HTML_PAGE = """<!doctype html>
           <p id="intake-status" class="muted"></p>
         </div>
         <div class="panel">
+          <h2>Current Run</h2>
+          <div id="current-run"></div>
+        </div>
+        <div class="panel">
           <h2>Blocked Tasks</h2>
           <div id="blocked"></div>
         </div>
@@ -102,7 +106,7 @@ HTML_PAGE = """<!doctype html>
         const payload = await response.json();
         renderList('active', payload.active_tasks, task => `
           <li>
-            <strong>${task.title}</strong>
+            <a class="artifact-link" href="/tasks/${task.id}" target="_blank" rel="noreferrer"><strong>${task.title}</strong></a>
             <div class="task-id">${task.id}</div>
             <div class="pill ${task.execution_state}">${taskStateLabel(task)}</div>
             <div class="meta">${task.status} / next: ${task.next_action}</div>
@@ -110,6 +114,7 @@ HTML_PAGE = """<!doctype html>
             <div class="meta">subtasks: ${task.open_subtask_count}${task.latest_run ? ` / run: ${task.latest_run.status} / started: ${task.last_run_started_at}` : ''}</div>
           </li>
         `);
+        renderCurrentRun(payload.current_run);
         renderBlocked(payload.blocked_tasks);
         renderList('deliverables', payload.recent_deliverables || [], artifact => `
           <li>
@@ -118,13 +123,13 @@ HTML_PAGE = """<!doctype html>
             <div class="meta">${artifact.task_id} / ${artifact.task_status}</div>
           </li>
         `);
-        renderList('handoffs', payload.pending_handoffs, handoff => `<li><strong>${handoff.to_agent}</strong><div class="task-id">${handoff.task_id}</div><div class="meta">${handoff.reason}</div></li>`);
+        renderList('handoffs', payload.pending_handoffs, handoff => `<li><strong>${handoff.to_agent}</strong><div class="task-id">${handoff.task_id}</div><div class="meta">${handoff.status} / ${handoff.reason}</div></li>`);
         renderApprovals(payload.pending_approvals);
         renderList('artifacts', payload.recent_artifacts.slice(0, 8), artifact => `
           <li>
             <a class="artifact-link" href="/artifacts/${artifact.id}" target="_blank" rel="noreferrer"><strong>${artifact.title}</strong></a>
             <div class="task-id">${artifact.task_id}</div>
-            <div class="meta">${artifact.artifact_type}</div>
+            <div class="meta">${artifact.artifact_type}${artifact.metadata?.classification ? ` / ${artifact.metadata.classification}` : ''}</div>
           </li>
         `);
         document.getElementById('summary').innerHTML = `
@@ -145,6 +150,21 @@ HTML_PAGE = """<!doctype html>
         }
         target.innerHTML = `<ul>${items.map(template).join('')}</ul>`;
       }
+      function renderCurrentRun(item) {
+        const target = document.getElementById('current-run');
+        if (!item) {
+          target.innerHTML = '<p class="muted">No active run.</p>';
+          return;
+        }
+        target.innerHTML = `
+          <p><a class="artifact-link" href="/tasks/${item.task_id}" target="_blank" rel="noreferrer"><strong>${item.task_title}</strong></a></p>
+          <div class="task-id">${item.task_id}</div>
+          <div class="meta">task: ${item.task_status} / run: ${item.run_status}</div>
+          <div class="meta">started: ${item.started_at}</div>
+          <div class="meta">next: ${item.next_action}</div>
+          <div class="meta">open subtasks: ${item.open_subtask_count}</div>
+        `;
+      }
       function renderBlocked(items) {
         const target = document.getElementById('blocked');
         if (!items.length) {
@@ -153,7 +173,7 @@ HTML_PAGE = """<!doctype html>
         }
         target.innerHTML = items.map(task => `
           <div style="margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line);">
-            <strong>${task.title}</strong>
+            <a class="artifact-link" href="/tasks/${task.id}" target="_blank" rel="noreferrer"><strong>${task.title}</strong></a>
             <div class="task-id">${task.id}</div>
             <div class="pill ${task.execution_state}">${taskStateLabel(task)}</div>
             <p class="warn">${task.blocked_reason || 'Blocked'}</p>
@@ -253,9 +273,17 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             self._send_json(self.server.runtime.dashboard_snapshot())
             return
+        if parsed.path.startswith("/api/tasks/"):
+            task_id = parsed.path.split("/")[3]
+            self._send_json(self.server.runtime.task_bundle(task_id))
+            return
         if parsed.path.startswith("/api/artifacts/"):
             artifact_id = parsed.path.split("/")[3]
             self._send_json(self.server.runtime.service.get_artifact(artifact_id))
+            return
+        if parsed.path.startswith("/tasks/"):
+            task_id = parsed.path.split("/")[2]
+            self._send_html(self._task_page(self.server.runtime.task_bundle(task_id)))
             return
         if parsed.path.startswith("/artifacts/"):
             artifact_id = parsed.path.split("/")[2]
@@ -358,8 +386,117 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         <div class="artifact-body" id="raw-markdown">{content}</div>
       </details>
     </main>
+      </body>
+</html>"""
+
+    def _task_page(self, bundle: dict[str, Any]) -> str:
+        task = bundle["task"]
+        task_id = self._escape_html(str(task["id"]))
+        title = self._escape_html(str(task["title"]))
+        blocked_reason = self._escape_html(str(task.get("blocked_reason") or ""))
+        summary_rows = [
+            f"<div class=\"meta\">status: {self._escape_html(str(task['status']))}</div>",
+            f"<div class=\"meta\">next: {self._escape_html(str(task['next_action']))}</div>",
+            f"<div class=\"meta\">open subtasks: {self._escape_html(str(task['open_subtask_count']))}</div>",
+        ]
+        if blocked_reason:
+            summary_rows.append(f"<div class=\"meta warn\">blocked: {blocked_reason}</div>")
+        children = self._list_section(
+            "Subtasks",
+            bundle["children"],
+            lambda item: (
+                f"<li><strong>{self._escape_html(str(item['title']))}</strong>"
+                f"<div class=\"task-id\">{self._escape_html(str(item['id']))}</div>"
+                f"<div class=\"meta\">{self._escape_html(str(item['status']))}</div></li>"
+            ),
+        )
+        runs = self._list_section(
+            "Runs",
+            bundle["runs"],
+            lambda item: (
+                f"<li><strong>{self._escape_html(str(item['status']))}</strong>"
+                f"<div class=\"task-id\">{self._escape_html(str(item['id']))}</div>"
+                f"<div class=\"meta\">started: {self._escape_html(str(item['started_at']))}</div>"
+                f"<div class=\"meta\">summary: {self._escape_html(str(item.get('result_summary') or ''))}</div></li>"
+            ),
+        )
+        handoffs = self._list_section(
+            "Handoffs",
+            bundle["handoffs"],
+            lambda item: (
+                f"<li><strong>{self._escape_html(str(item['to_agent']))}</strong>"
+                f"<div class=\"task-id\">{self._escape_html(str(item['id']))}</div>"
+                f"<div class=\"meta\">{self._escape_html(str(item['status']))} / {self._escape_html(str(item['reason']))}</div></li>"
+            ),
+        )
+        approvals = self._list_section(
+            "Approvals",
+            bundle["approvals"],
+            lambda item: (
+                f"<li><strong>{self._escape_html(str(item['kind']))}</strong>"
+                f"<div class=\"task-id\">{self._escape_html(str(item['id']))}</div>"
+                f"<div class=\"meta\">{self._escape_html(str(item['status']))}</div></li>"
+            ),
+        )
+        artifacts = self._list_section(
+            "Artifacts",
+            bundle["artifacts"],
+            lambda item: (
+                f"<li><a class=\"artifact-link\" href=\"/artifacts/{self._escape_html(str(item['id']))}\" target=\"_blank\" rel=\"noreferrer\"><strong>{self._escape_html(str(item['title']))}</strong></a>"
+                f"<div class=\"task-id\">{self._escape_html(str(item['id']))}</div>"
+                f"<div class=\"meta\">{self._escape_html(str(item['artifact_type']))}</div></li>"
+            ),
+        )
+        return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <style>
+      :root {{
+        --bg: #f4f0e8;
+        --panel: #fffaf2;
+        --ink: #1e1a16;
+        --muted: #6f655c;
+        --line: #d8c8b3;
+        --warn: #a23d2f;
+        --info: #1c5d99;
+      }}
+      body {{ margin: 0; font-family: Georgia, "Iowan Old Style", serif; background: linear-gradient(180deg, #efe7dc, #f8f4ee); color: var(--ink); }}
+      a {{ color: var(--info); text-decoration: none; }}
+      a:hover {{ text-decoration: underline; }}
+      .page {{ max-width: 1080px; margin: 0 auto; padding: 24px; }}
+      .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }}
+      .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }}
+      .meta {{ color: var(--muted); margin-bottom: 8px; overflow-wrap: anywhere; }}
+      .warn {{ color: var(--warn); }}
+      ul {{ padding-left: 18px; margin: 0; }}
+      li {{ margin-bottom: 10px; overflow-wrap: anywhere; }}
+      .task-id {{ color: var(--muted); font-size: 0.86rem; }}
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <p><a href="/">Back to dashboard</a></p>
+      <h1>{title}</h1>
+      <div class="task-id">{task_id}</div>
+      {''.join(summary_rows)}
+      <section class="grid">
+        <div class="panel">{children}</div>
+        <div class="panel">{runs}</div>
+        <div class="panel">{handoffs}</div>
+        <div class="panel">{approvals}</div>
+        <div class="panel" style="grid-column: 1 / -1;">{artifacts}</div>
+      </section>
+    </main>
   </body>
 </html>"""
+
+    def _list_section(self, title: str, items: list[dict[str, Any]], renderer: Any) -> str:
+        if not items:
+            return f"<h2>{self._escape_html(title)}</h2><p class=\"muted\">None.</p>"
+        return f"<h2>{self._escape_html(title)}</h2><ul>{''.join(renderer(item) for item in items)}</ul>"
 
     def _escape_html(self, value: str) -> str:
         return (
