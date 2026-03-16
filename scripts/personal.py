@@ -122,6 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--cwd", required=True)
     start.add_argument("--prompt", default=None)
 
+    pause_running = subparsers.add_parser("pause-running")
+    pause_running.add_argument("--reason", default="Daemon restart requested")
+
     status = subparsers.add_parser("status")
 
     worker = subparsers.add_parser("worker")
@@ -255,7 +258,7 @@ def main() -> int:
         return 0
 
     runtime = None
-    if args.command in {"intake", "start", "status"}:
+    if args.command in {"intake", "start", "pause-running", "status"}:
         try:
             runtime = PersonalAgentRuntime()
         except RuntimeError as exc:
@@ -275,6 +278,10 @@ def main() -> int:
 
     if args.command == "start":
         _print(runtime.start_task(args.task_id, args.cwd, args.prompt), args.as_json)
+        return 0
+
+    if args.command == "pause-running":
+        _print(runtime.pause_running_tasks(args.reason), args.as_json)
         return 0
 
     if args.command == "status":
