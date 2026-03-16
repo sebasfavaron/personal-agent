@@ -59,18 +59,16 @@
 - Codex writable-extra-dir convention for `personal-agent`:
   - launch with `--add-dir ~/agents-database` so sandboxed `codex exec` can write the canonical shared DB in place
 
-### Legacy transitional state
+### Shared-only state
 
-- pre-V1 personal-agent sqlite:
-  - `~/personal-agent/data/personal-agent.sqlite3`
+- all current personal-agent persistence lives in:
+  - `~/agents-database/data/shared-agent-memory.sqlite3`
 
-Keep only for migration and audit while V1 stabilizes.
+Compatibility behavior:
 
-Transition behavior:
-
-- new operational work must land in `agents-database`
-- legacy runs can still be inspected through `personal-agent` because mirrored run summaries/claims/sources are readable from shared DB
-- local sqlite is not allowed back in as the durable source of truth for new tasks, handoffs, approvals, or artifacts
+- new operational work lands in `agents-database`
+- research/leisure/legacy CLI flows now also land in `agents-database`
+- `personal-agent` can still inspect old mirrored shared-memory run records when present
 
 ## Recreate On A New Machine
 
@@ -123,7 +121,6 @@ Minimum backup set:
 - `~/agents-database/data/shared-agent-memory.sqlite3`
 - `~/ai-dev-workflow/.agents/local-config.json`
 - active `feature-contexts/` if they matter
-- optional legacy `personal-agent/data/personal-agent.sqlite3`
 
 ## V1 Notes
 

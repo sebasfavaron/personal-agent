@@ -89,13 +89,15 @@ python3 scripts/personal.py report --run-id "<run-id>" --format md
 Default database path:
 
 ```text
-./data/personal-agent.sqlite3
+~/agents-database/data/shared-agent-memory.sqlite3
 ```
+
+The database is created on first use by the shared-memory service.
 
 To override it:
 
 ```bash
-export PERSONAL_AGENT_DATA_DIR=/absolute/path/to/data-dir
+export PERSONAL_AGENT_SHARED_MEMORY_DB_PATH=/absolute/path/to/shared-agent-memory.sqlite3
 ```
 
 ## Optional: Expose Skills Globally For Codex
