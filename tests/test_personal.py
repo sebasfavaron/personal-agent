@@ -763,6 +763,21 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(planned["target_repo_id"], "repo_personal_agent")
         self.assertEqual(planned["target_repo_name"], "personal-agent")
 
+    def test_router_fallback_infers_calistenia_from_repo_path(self) -> None:
+        from personal_agent.router import route_request
+
+        def fake_run(command, capture_output=True, text=True, check=True):
+            output_path = Path(command[command.index("-o") + 1])
+            output_path.write_text("not-json", encoding="utf-8")
+            return type("CompletedProcess", (), {"stdout": "", "stderr": ""})()
+
+        with patch("personal_agent.planner.subprocess.run", side_effect=fake_run):
+            planned = route_request("In /Users/sebas/Code/calistenia, change a tiny string and run repo checks")
+
+        self.assertEqual(planned["primary_agent"], "code")
+        self.assertEqual(planned["target_repo_id"], "repo_calistenia")
+        self.assertEqual(planned["target_repo_name"], "calistenia")
+
     def test_leisure_items_can_be_stored_listed_and_searched(self) -> None:
         from personal_agent.research_store import add_leisure_item, list_leisure_items, search_memory
 
@@ -1174,6 +1189,7 @@ class PersonalAgentTests(unittest.TestCase):
 
     def test_runtime_code_route_runs_codex_in_ai_dev_workflow_repo(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+        from personal_agent.repo_targets import default_code_repo
 
         runtime = PersonalAgentRuntime()
         task = runtime.service.create_task(
@@ -1208,7 +1224,7 @@ class PersonalAgentTests(unittest.TestCase):
 
         self.assertTrue(calls)
         self.assertIn("workspace-write", calls[0])
-        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(Path("/Users/sebas/ai-dev-workflow")))
+        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(default_code_repo()["path"]))
 
     def test_runtime_code_route_runs_codex_in_named_target_repo(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
