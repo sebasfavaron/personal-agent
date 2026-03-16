@@ -1173,7 +1173,8 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertTrue(any(item["metadata"].get("outcome") == "interrupted" for item in artifacts))
 
     def test_runtime_code_route_runs_codex_in_ai_dev_workflow_repo(self) -> None:
-        from personal_agent.runtime import AI_DEV_WORKFLOW_ROOT, PERSONAL_AGENT_ID, PersonalAgentRuntime
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+        from personal_agent.repo_targets import default_code_repo
 
         runtime = PersonalAgentRuntime()
         task = runtime.service.create_task(
@@ -1208,10 +1209,10 @@ class PersonalAgentTests(unittest.TestCase):
 
         self.assertTrue(calls)
         self.assertIn("workspace-write", calls[0])
-        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(AI_DEV_WORKFLOW_ROOT))
+        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(default_code_repo()["path"]))
 
     def test_runtime_code_route_runs_codex_in_named_target_repo(self) -> None:
-        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PERSONAL_ROOT, PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
         task = runtime.service.create_task(
@@ -1253,7 +1254,7 @@ class PersonalAgentTests(unittest.TestCase):
             runtime.process_once()
 
         self.assertTrue(calls)
-        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(Path("/Users/sebas/personal-agent")))
+        self.assertEqual(calls[0][calls[0].index("-C") + 1], str(PERSONAL_ROOT))
 
     def test_legacy_code_delegation_target_does_not_show_await_handoff_next_action(self) -> None:
         from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
