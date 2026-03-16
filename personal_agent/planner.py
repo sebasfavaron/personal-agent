@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import CODEX_ADD_DIRS, CODEX_BIN
+from .repo_targets import infer_target_repo, repo_target_by_id
 
 
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
@@ -103,9 +104,13 @@ def fallback_subtasks(text: str, route: dict[str, Any]) -> list[dict[str, str]]:
 
 def build_intake_plan(text: str, memory_context: list[dict[str, Any]]) -> dict[str, Any]:
     fallback_route = classify_request(text)
+    fallback_target_repo = infer_target_repo(text, primary_agent=fallback_route["primary_agent"])
     fallback = {
         **fallback_route,
         "delegation_target": DELEGATION_BY_AGENT.get(fallback_route["primary_agent"]),
+        "target_repo_id": fallback_target_repo["id"] if fallback_target_repo else None,
+        "target_repo_name": fallback_target_repo["name"] if fallback_target_repo else None,
+        "target_repo_path": fallback_target_repo["path"] if fallback_target_repo else None,
         "subtasks": fallback_subtasks(text, fallback_route),
         "planning_source": "fallback",
         "codex_instruction": "",
@@ -124,6 +129,9 @@ def build_route_payload(text: str, memory_context: list[dict[str, Any]] | None =
         "secondary_agent": plan["secondary_agent"],
         "reason": plan["reason"],
         "delegation_target": plan["delegation_target"],
+        "target_repo_id": plan.get("target_repo_id"),
+        "target_repo_name": plan.get("target_repo_name"),
+        "target_repo_path": plan.get("target_repo_path"),
         "planning_source": plan["planning_source"],
         "codex_instruction": plan["codex_instruction"],
     }
@@ -175,6 +183,7 @@ def _planning_prompt(text: str, memory_context: list[dict[str, Any]]) -> str:
             '  "secondary_agent": "personal|company|code|null",',
             '  "reason": "short reason",',
             '  "delegation_target": "ballbox-company-agent|null",',
+            '  "target_repo_id": "repo_personal_agent|repo_ai_dev_workflow|repo_ballbox_company_agent|null",',
             '  "codex_instruction": "short execution note for the shell",',
             '  "subtasks": [',
             '    {"title": "short title", "detail": "one sentence"}',
@@ -185,6 +194,7 @@ def _planning_prompt(text: str, memory_context: list[dict[str, Any]]) -> str:
             "- Use code when the request is mainly repo, implementation, bugfix, branch, PR, or tests.",
             "- Use personal for planning, synthesis, research, or local coordination.",
             "- Prefer company as primary and code as secondary for mixed Ballbox plus repo work.",
+            "- Set target_repo_id when the request names a repo or clearly implies one; for 'this repo' use repo_personal_agent.",
             "- Always return exactly 3 subtasks.",
             "",
             f"Request: {text}",
@@ -223,6 +233,21 @@ def _normalize_plan(payload: dict[str, Any], fallback: dict[str, Any]) -> dict[s
     delegation_target = payload.get("delegation_target")
     if delegation_target not in {None, *DELEGATION_BY_AGENT.values()}:
         delegation_target = DELEGATION_BY_AGENT.get(primary_agent)
+    target_repo_id = payload.get("target_repo_id")
+    if not isinstance(target_repo_id, str) or not target_repo_id.strip():
+        target_repo_id = fallback.get("target_repo_id")
+    target_repo_name = fallback.get("target_repo_name")
+    target_repo_path = fallback.get("target_repo_path")
+    if isinstance(target_repo_id, str):
+        inferred = repo_target_by_id(target_repo_id)
+        if inferred is not None:
+            target_repo_name = inferred["name"]
+            target_repo_path = inferred["path"]
+            target_repo_id = inferred["id"]
+        else:
+            target_repo_id = fallback.get("target_repo_id")
+            target_repo_name = fallback.get("target_repo_name")
+            target_repo_path = fallback.get("target_repo_path")
     subtasks = _normalize_subtasks(payload.get("subtasks"), fallback["subtasks"])
     codex_instruction = str(payload.get("codex_instruction") or "").strip()
     return {
@@ -230,6 +255,9 @@ def _normalize_plan(payload: dict[str, Any], fallback: dict[str, Any]) -> dict[s
         "secondary_agent": secondary_agent,
         "reason": reason,
         "delegation_target": delegation_target,
+        "target_repo_id": target_repo_id,
+        "target_repo_name": target_repo_name,
+        "target_repo_path": target_repo_path,
         "subtasks": subtasks,
         "planning_source": "codex",
         "codex_instruction": codex_instruction,

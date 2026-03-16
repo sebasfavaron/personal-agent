@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import CODEX_ADD_DIRS, CODEX_BIN
 from .planner import build_intake_plan
+from .repo_targets import default_code_repo, repo_catalog, repo_target_by_id
 from .shared_memory import get_memory_service
 
 
@@ -19,7 +20,6 @@ PERSONAL_AGENT_ID = "personal-agent"
 PERSONAL_PROJECT_ID = "proj_personal_agent"
 SYSTEM_REPO_ID = "repo_personal_agent"
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
-AI_DEV_WORKFLOW_ROOT = PERSONAL_ROOT.parent / "ai-dev-workflow"
 BALLBOX_COMPANY_ROOT = PERSONAL_ROOT.parent / "ballbox-company-agent"
 NON_TERMINAL_HANDOFF_STATUSES = {"pending", "accepted", "in_progress"}
 
@@ -46,7 +46,8 @@ class PersonalAgentRuntime:
 
     def _ensure_entities(self) -> None:
         self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Front door and orchestration runtime")
-        self.service.create_repo(SYSTEM_REPO_ID, "personal-agent", project_id=PERSONAL_PROJECT_ID, path=str(PERSONAL_ROOT))
+        for repo in repo_catalog().values():
+            self.service.create_repo(str(repo["id"]), str(repo["name"]), project_id=PERSONAL_PROJECT_ID, path=str(repo["path"]))
 
     def intake(self, text: str, origin: str = "human") -> IntakeResult:
         memory_context = self.service.search(text, scopes=["global", "project", "repo", "agent"], limit=5)["results"]
@@ -56,16 +57,20 @@ class PersonalAgentRuntime:
             "secondary_agent": plan["secondary_agent"],
             "reason": plan["reason"],
             "delegation_target": plan["delegation_target"],
+            "target_repo_id": plan.get("target_repo_id"),
+            "target_repo_name": plan.get("target_repo_name"),
+            "target_repo_path": plan.get("target_repo_path"),
             "planning_source": plan["planning_source"],
             "codex_instruction": plan["codex_instruction"],
         }
+        target_repo_id = route.get("target_repo_id") or SYSTEM_REPO_ID
         task = self.service.create_task(
             title=self._task_title(text),
             intent=text,
             kind="task",
             status="open",
             project_id=PERSONAL_PROJECT_ID,
-            repo_id=SYSTEM_REPO_ID,
+            repo_id=target_repo_id,
             origin=origin,
             owner_agent=PERSONAL_AGENT_ID,
             metadata={"route": route, "stage": "intake"},
@@ -78,7 +83,7 @@ class PersonalAgentRuntime:
                 status="open",
                 priority=index + 1,
                 project_id=PERSONAL_PROJECT_ID,
-                repo_id=SYSTEM_REPO_ID,
+                repo_id=target_repo_id,
                 parent_task_id=task["id"],
                 origin=origin,
                 owner_agent=PERSONAL_AGENT_ID,
@@ -409,7 +414,10 @@ class PersonalAgentRuntime:
         with tempfile.NamedTemporaryFile(prefix="personal-agent-task-", suffix=".json", delete=False) as handle:
             output_path = Path(handle.name)
         prompt = self._task_execution_prompt(task)
-        repo_root = AI_DEV_WORKFLOW_ROOT if route.get("primary_agent") == "code" else PERSONAL_ROOT
+        repo_root = PERSONAL_ROOT
+        if route.get("primary_agent") == "code":
+            target_repo = repo_target_by_id(route.get("target_repo_id")) or default_code_repo()
+            repo_root = Path(str(target_repo["path"]))
         sandbox_mode = "workspace-write" if route.get("primary_agent") == "code" else "read-only"
         command = [
             CODEX_BIN,
@@ -459,10 +467,11 @@ class PersonalAgentRuntime:
         prior_artifacts = self.service.list_artifacts(task_id=task["id"], limit=20)
         subtask_lines = [f"- {item['title']}: {item['intent']}" for item in child_subtasks[:6]] or ["- none"]
         artifact_lines = [f"- {item['artifact_type']}: {item['title']}" for item in prior_artifacts[:8]] or ["- none"]
+        target_repo = repo_target_by_id(route.get("target_repo_id")) or default_code_repo()
         if route.get("primary_agent") == "code":
             return "\n".join(
                 [
-                    "You are a clean Codex subagent running inside the ai-dev-workflow repository.",
+                    f"You are a clean Codex subagent running inside the {target_repo['name']} repository.",
                     "Treat this as a concrete code task, not as orchestration.",
                     "Start from the current repository context and its local skills.",
                     "Keep focus narrow; ignore unrelated parent-task context unless it is explicitly included below.",
@@ -495,7 +504,7 @@ class PersonalAgentRuntime:
                     "- Use complete only when the requested code work or a safe concrete slice is actually done.",
                     "- Use blocked when missing context prevents safe progress.",
                     "- Use needs_approval for side effects or irreversible actions.",
-                    "- Do not create handoffs to ai-dev-workflow; you already are that subagent.",
+                    "- Do not create handoffs for code work; you already are the code subagent in the target repo.",
                     "- create_followup_task is for durable leftover work only.",
                     "- record_artifact is for notes worth preserving.",
                     "- Always include report_markdown with findings, changes, verification, and next actions.",
@@ -503,6 +512,7 @@ class PersonalAgentRuntime:
                     f"Task title: {task['title']}",
                     f"Task intent: {task['intent']}",
                     f"Reason: {route.get('reason', 'n/a')}",
+                    f"Target repo: {target_repo['name']} ({target_repo['path']})",
                     "Open subtasks:",
                     *subtask_lines,
                     "Existing artifacts:",
@@ -555,7 +565,7 @@ class PersonalAgentRuntime:
                 f"Route: {route.get('primary_agent', 'personal')}",
                 f"Reason: {route.get('reason', 'n/a')}",
                 (
-                    "Execution mode: code subagent in ai-dev-workflow repo; inspect and implement directly when needed."
+                    f"Execution mode: code subagent in {target_repo['name']}; inspect and implement directly when needed."
                     if route.get("primary_agent") == "code"
                     else "Execution mode: personal-agent read-only analysis."
                 ),
