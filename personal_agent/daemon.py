@@ -512,12 +512,39 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         return f'<a href="{href}" target="_blank" rel="noreferrer">{label}</a>'
 
     def _sanitize_href(self, href: str) -> str:
-        parsed = urlparse(href)
+        candidate = href.strip()
+        parsed = urlparse(candidate)
         if parsed.scheme in {"http", "https", "mailto"}:
-            return href
-        if href.startswith(("/", "./", "../", "#")):
-            return href
+            return candidate
+        if candidate.startswith(("/", "./", "../", "#")):
+            return candidate
+        if self._looks_like_external_host(candidate):
+            normalized = f"https://{candidate}"
+            parsed = urlparse(normalized)
+            if parsed.scheme in {"http", "https"} and parsed.netloc:
+                return normalized
+        if self._looks_like_relative_href(candidate):
+            return candidate
         return ""
+
+    def _looks_like_external_host(self, href: str) -> bool:
+        if re.search(r"\s", href):
+            return False
+        if "/" in href and href.startswith("/"):
+            return False
+        if ":" in href:
+            return False
+        host = href.split("/", 1)[0]
+        return bool(re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", host))
+
+    def _looks_like_relative_href(self, href: str) -> bool:
+        if not href or re.search(r"\s", href):
+            return False
+        if href.startswith("//"):
+            return False
+        if ":" in href:
+            return False
+        return True
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8082, interval_seconds: float = 5.0) -> None:

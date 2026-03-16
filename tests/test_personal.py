@@ -588,6 +588,14 @@ class PersonalAgentTests(unittest.TestCase):
             '<a href="http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89" target="_blank" rel="noreferrer">USECASE.md</a>',
             rendered,
         )
+        self.assertIn(
+            '<a href="https://link.com" target="_blank" rel="noreferrer">txt</a>',
+            handler._render_markdown("[txt](link.com)"),
+        )
+        self.assertIn(
+            '<a href="link" target="_blank" rel="noreferrer">tct</a>',
+            handler._render_markdown("[tct](link)"),
+        )
         self.assertIn("<code>code</code>", rendered)
 
         page = handler._artifact_page(
