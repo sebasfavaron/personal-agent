@@ -86,13 +86,19 @@ logs_agent() {
 
 usage() {
   cat <<EOF
-Usage: ./scripts/launchd-8082.sh {install|uninstall|status|logs}
+Usage: ./scripts/launchd-8082.sh {install|uninstall|start|stop|restart|status|logs}
 EOF
 }
 
 case "${1:-}" in
   install) install_agent ;;
   uninstall) uninstall_agent ;;
+  start) install_agent ;;
+  stop) launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true ;;
+  restart)
+    launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
+    install_agent
+    ;;
   status) status_agent ;;
   logs) logs_agent ;;
   *)
