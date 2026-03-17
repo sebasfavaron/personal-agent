@@ -16,15 +16,19 @@ class FakeOperationalMemoryService:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self.store = type("Store", (), {"db_path": db_path})()
+        self.memories: dict[str, dict] = {}
         self.projects: dict[str, dict] = {}
         self.repos: dict[str, dict] = {}
         self.tasks: dict[str, dict] = {}
         self.task_runs: dict[str, dict] = {}
         self.artifacts: dict[str, dict] = {}
+        self.approvals: dict[str, dict] = {}
         self._counters = {
+            "mem": 0,
             "task": 0,
             "run": 0,
             "artifact": 0,
+            "approval": 0,
         }
 
     def _now(self) -> str:
@@ -48,12 +52,95 @@ class FakeOperationalMemoryService:
             self.repos[repo_id] = repo
         return dict(repo)
 
+    def _text_embedding(self, text: str) -> list[float]:
+        return [float(len(text))]
+
+    def ingest(self, memory_input: dict) -> dict:
+        memory_id = memory_input.get("id", self._next_id("mem"))
+        now = self._now()
+        existing = self.memories.get(memory_id)
+        memory = {
+            "id": memory_id,
+            "type": memory_input["type"],
+            "scope": memory_input["scope"],
+            "status": memory_input.get("status", "active"),
+            "project_id": memory_input.get("project_id"),
+            "repo_id": memory_input.get("repo_id"),
+            "agent_id": memory_input.get("agent_id"),
+            "source_kind": memory_input.get("source_kind", "manual"),
+            "title": memory_input["title"],
+            "content": memory_input["content"],
+            "summary": memory_input.get("summary") or memory_input["content"][:180],
+            "confidence": float(memory_input.get("confidence", 1.0)),
+            "freshness": float(memory_input.get("freshness", 1.0)),
+            "created_at": memory_input.get("created_at", existing["created_at"] if existing else now),
+            "updated_at": now,
+            "observed_at": memory_input.get("observed_at", now),
+            "source_ref": memory_input.get("source_ref"),
+            "evidence_ref": memory_input.get("evidence_ref"),
+            "embedding": memory_input.get("embedding"),
+            "metadata": dict(memory_input.get("metadata") or {}),
+        }
+        self.memories[memory_id] = memory
+        return dict(memory)
+
+    def get_memory(self, memory_id: str) -> dict:
+        return dict(self.memories[memory_id])
+
+    def list_memories(
+        self,
+        *,
+        status="active",
+        scope=None,
+        memory_type=None,
+        project_id=None,
+        repo_id=None,
+        source_ref=None,
+        evidence_ref=None,
+        metadata=None,
+        limit=50,
+    ) -> list[dict]:
+        items = list(self.memories.values())
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        if scope is not None:
+            items = [item for item in items if item["scope"] == scope]
+        if memory_type is not None:
+            items = [item for item in items if item["type"] == memory_type]
+        if project_id is not None:
+            items = [item for item in items if item.get("project_id") == project_id]
+        if repo_id is not None:
+            items = [item for item in items if item.get("repo_id") == repo_id]
+        if source_ref is not None:
+            items = [item for item in items if item.get("source_ref") == source_ref]
+        if evidence_ref is not None:
+            items = [item for item in items if item.get("evidence_ref") == evidence_ref]
+        for key, value in (metadata or {}).items():
+            items = [item for item in items if item.get("metadata", {}).get(key) == value]
+        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        return [dict(item) for item in items[:limit]]
+
     def search(self, query: str, scopes: list[str] | None = None, limit: int = 10) -> dict:
-        del query, scopes, limit
-        return {"retrieval_id": "fake", "results": []}
+        normalized = query.lower()
+        items = list(self.memories.values())
+        if scopes is not None:
+            items = [item for item in items if item["scope"] in scopes]
+        matches = []
+        for item in items:
+            haystack = " ".join([item["title"], item["summary"], item["content"]]).lower()
+            if normalized and normalized not in haystack:
+                continue
+            matches.append(
+                {
+                    "memory": dict(item),
+                    "matched_scope": item["scope"],
+                    "explanation": "fake lexical match",
+                }
+            )
+        return {"retrieval_id": "fake", "results": matches[:limit]}
 
     def create_task(self, title: str, intent: str, **kwargs) -> dict:
-        task_id = self._next_id("task")
+        task_id = kwargs.get("task_id") or self._next_id("task")
         now = self._now()
         task = {
             "id": task_id,
@@ -70,6 +157,7 @@ class FakeOperationalMemoryService:
             "metadata": dict(kwargs.get("metadata") or {}),
             "blocked_reason": kwargs.get("blocked_reason"),
             "requires_human_input": kwargs.get("requires_human_input", False),
+            "due_at": kwargs.get("due_at"),
             "created_at": now,
             "updated_at": now,
         }
@@ -176,8 +264,45 @@ class FakeOperationalMemoryService:
             "runs": self.list_task_runs(task_id=task_id, limit=100),
             "artifacts": self.list_artifacts(task_id=task_id, limit=100),
             "handoffs": [],
-            "approvals": [],
+            "approvals": [dict(item) for item in self.list_approvals(limit=100) if item["task_id"] == task_id],
         }
+
+    def create_approval(self, *, task_id: str, kind: str, risk_level: str, payload: dict, status: str = "pending") -> dict:
+        approval_id = self._next_id("approval")
+        now = self._now()
+        approval = {
+            "id": approval_id,
+            "task_id": task_id,
+            "kind": kind,
+            "status": status,
+            "risk_level": risk_level,
+            "payload": dict(payload),
+            "resolution_note": None,
+            "requested_at": now,
+            "resolved_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        self.approvals[approval_id] = approval
+        return dict(approval)
+
+    def get_approval(self, approval_id: str) -> dict:
+        return dict(self.approvals[approval_id])
+
+    def list_approvals(self, *, status=None, limit=50) -> list[dict]:
+        items = list(self.approvals.values())
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        items.sort(key=lambda item: item["created_at"], reverse=True)
+        return [dict(item) for item in items[:limit]]
+
+    def resolve_approval(self, approval_id: str, *, status: str, resolution_note: str | None = None) -> dict:
+        approval = self.approvals[approval_id]
+        approval["status"] = status
+        approval["resolution_note"] = resolution_note
+        approval["resolved_at"] = self._now()
+        approval["updated_at"] = self._now()
+        return dict(approval)
 
 
 class PersonalAgentTests(unittest.TestCase):
@@ -268,6 +393,32 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn("ai-dev-workflow", execution["suggested_cwd"])
         self.assertEqual(execution["permission_mode"], "danger-full-access")
         self.assertIn("Outputs", execution["prompt_preview"])
+
+    def test_available_cwd_options_prefers_known_repos_and_reads_workspace_dirs(self) -> None:
+        from personal_agent import repo_targets
+
+        workspace_root = Path(self.tmp.name) / "Code"
+        workspace_root.mkdir()
+        (workspace_root / "street-cast-pwa").mkdir()
+        (workspace_root / "zeta-tool").mkdir()
+        (workspace_root / "node_modules").mkdir()
+        hidden_dir = workspace_root / ".cache"
+        hidden_dir.mkdir()
+
+        known_repo = Path(self.tmp.name) / "personal-agent"
+        known_repo.mkdir()
+
+        with patch.object(repo_targets, "PERSONAL_ROOT", known_repo), patch.object(repo_targets, "WORKSPACE_ROOT", workspace_root):
+            options = repo_targets.available_cwd_options()
+
+        option_paths = [item["path"] for item in options]
+        option_names = [item["name"] for item in options]
+
+        self.assertIn(str(known_repo.resolve()), option_paths)
+        self.assertIn(str((workspace_root / "street-cast-pwa").resolve()), option_paths)
+        self.assertIn("street-cast-pwa", option_names)
+        self.assertNotIn(str((workspace_root / "node_modules").resolve()), option_paths)
+        self.assertNotIn(str(hidden_dir.resolve()), option_paths)
 
     def test_add_structured_task_creates_runtime_visible_draft(self) -> None:
         from personal_agent.research_store import add_structured_task
@@ -521,6 +672,7 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(payload["active_runs"][0]["id"], running["id"])
         self.assertEqual(payload["failed_tasks"][0]["id"], failed["id"])
         self.assertEqual(payload["recent_results"][0]["task_title"], done["title"])
+        self.assertTrue(payload["cwd_options"])
 
     def test_next_tasks_prefers_draft_tasks(self) -> None:
         from personal_agent.research_store import next_tasks
@@ -544,6 +696,110 @@ class PersonalAgentTests(unittest.TestCase):
 
         self.assertEqual(len(payload), 1)
         self.assertEqual(payload[0]["id"], draft["id"])
+
+    def test_research_run_uses_canonical_memory_schema(self) -> None:
+        from personal_agent.research_store import add_claim, add_source, get_run, start_research
+        from personal_agent.shared_memory import PERSONAL_MEMORY_SCHEMA
+
+        payload = start_research("Map remaining memory surfaces", "repo cleanup", "shared db present")
+        run_id = payload["run"]["id"]
+        add_source(run_id, "https://example.com/spec", "Spec", "canonical metadata")
+        add_claim(run_id, "legacy tags should disappear from reads", 0.9, source_url="https://example.com/spec")
+
+        run = get_run(run_id)
+        related = self.fake_operational_memory.list_memories(source_ref=f"personal-agent:run:{run_id}", limit=20)
+
+        self.assertEqual(run["run"]["id"], run_id)
+        self.assertEqual(len(run["sources"]), 1)
+        self.assertEqual(len(run["claims"]), 1)
+        self.assertTrue(related)
+        self.assertTrue(all(memory["metadata"].get("schema") == PERSONAL_MEMORY_SCHEMA for memory in related))
+        self.assertTrue(all("legacy_kind" not in memory["metadata"] for memory in related))
+
+    def test_request_and_resolve_approval_use_native_approval_records(self) -> None:
+        from personal_agent.research_store import list_approvals, request_approval, resolve_approval
+
+        created = request_approval("external_action", {"target": "email draft"}, "high")
+        pending = list_approvals()
+        resolved = resolve_approval(created["id"], "approved", "ship it")
+        task = self.fake_operational_memory.get_task(created["task_id"])
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["id"], created["id"])
+        self.assertEqual(resolved["status"], "approved")
+        self.assertEqual(task["status"], "completed")
+        self.assertFalse(task["requires_human_input"])
+        self.assertEqual(task["metadata"]["approval_status"], "approved")
+
+    def test_migration_rewrites_legacy_records_and_archives_legacy_approval_memory(self) -> None:
+        from personal_agent.migration import migrate_legacy_memory
+        from personal_agent.research_store import get_run, list_approvals
+
+        self.fake_operational_memory.ingest(
+            {
+                "id": "legacy_run_run-123",
+                "type": "episode",
+                "scope": "global",
+                "status": "active",
+                "source_kind": "run",
+                "title": "Research run: Legacy cleanup",
+                "content": "Goal: Legacy cleanup\nScope: Repo\nAssumptions: None\nSummary: Pending",
+                "summary": "Pending",
+                "source_ref": "personal-agent:run:run-123",
+                "evidence_ref": "personal-agent:run:run-123",
+                "metadata": {"legacy_system": "personal-agent", "legacy_kind": "research_run", "legacy_run_id": "run-123", "run_status": "active"},
+            }
+        )
+        self.fake_operational_memory.ingest(
+            {
+                "id": "legacy_claim_run-123",
+                "type": "artifact",
+                "scope": "global",
+                "status": "active",
+                "source_kind": "manual",
+                "title": "Research claim: Old claim",
+                "content": "Old claim",
+                "summary": "Old claim",
+                "source_ref": "personal-agent:run:run-123",
+                "metadata": {"legacy_system": "personal-agent", "legacy_kind": "claim", "legacy_run_id": "run-123", "claim_status": "tentative"},
+            }
+        )
+        approval_memory = self.fake_operational_memory.ingest(
+            {
+                "id": "mem_legacy_approval",
+                "type": "artifact",
+                "scope": "global",
+                "status": "active",
+                "source_kind": "manual",
+                "title": "Approval request: outreach",
+                "content": '{"target":"vendor"}',
+                "summary": "outreach",
+                "source_ref": "personal-agent:approval",
+                "metadata": {
+                    "legacy_system": "personal-agent",
+                    "legacy_kind": "approval_request",
+                    "approval_kind": "outreach",
+                    "approval_status": "pending",
+                    "risk_level": "high",
+                    "payload": {"target": "vendor"},
+                },
+            }
+        )
+
+        migrated = migrate_legacy_memory()
+        run = get_run("run-123")
+        approvals = list_approvals()
+        archived = self.fake_operational_memory.get_memory(approval_memory["id"])
+
+        self.assertEqual(migrated["status"], "migrated")
+        self.assertEqual(migrated["migrated"]["runs"], 1)
+        self.assertEqual(migrated["migrated"]["claims"], 1)
+        self.assertEqual(migrated["migrated"]["approvals"], 1)
+        self.assertEqual(run["run"]["id"], "run-123")
+        self.assertEqual(len(run["claims"]), 1)
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(archived["status"], "archived")
+        self.assertEqual(archived["metadata"]["schema"], "personal-agent-memory-v1")
 
     def test_daemon_http_api_covers_status_intake_and_start(self) -> None:
         from personal_agent.daemon import PersonalAgentHandler
@@ -622,6 +878,9 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn(b"201", intake_handler.wfile.getvalue().splitlines()[0])
         self.assertIn(b"200", start_handler.wfile.getvalue().splitlines()[0])
         self.assertIn(b"200", status_handler.wfile.getvalue().splitlines()[0])
+        status_payload = json.loads(status_handler.wfile.getvalue().split(b"\r\n\r\n", 1)[1])
+        self.assertIn("cwd_options", status_payload)
+        self.assertTrue(status_payload["cwd_options"])
 
     def test_daemon_renders_markdown_links_in_artifacts(self) -> None:
         from personal_agent.daemon import PersonalAgentHandler

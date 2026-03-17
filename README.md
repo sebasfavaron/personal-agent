@@ -27,6 +27,7 @@ See [INSTALL.md](INSTALL.md) for setup.
 System map and machine-recreation guide:
 
 - [docs/system-v1.md](docs/system-v1.md)
+- [docs/raycast-codex-notify.md](docs/raycast-codex-notify.md)
 
 ## What Exists Today
 
@@ -47,8 +48,9 @@ Durable shared memory lives in the sibling project at `~/agents-database`.
 
 - research, leisure, approvals, and task intake write directly to shared memory
 - `memory-search` reads shared memory directly
-- `memory-migrate` is now a no-op compatibility command
-- `research status --run-id <id>` still falls back to old mirrored shared-memory records when present
+- approvals use the native shared-memory approvals table
+- `memory-migrate` rewrites legacy personal-agent metadata into the canonical shared-memory schema
+- `research status --run-id <id>` resolves runs from canonical shared-memory records only
 
 Default shared-memory path discovery:
 
