@@ -97,7 +97,7 @@ def route_request(text: str, execute: bool = False) -> dict[str, Any]:
         None,
         f"[{route['primary_agent']}] {text}",
         kind=f"{route['primary_agent']}_handoff",
-        status="open",
+        status="draft",
         notes=route["reason"],
     )
     mirrored = _mirror_route(text, route)

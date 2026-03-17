@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     research_task = research_sub.add_parser("add-task")
     research_task.add_argument("--run-id", required=True)
     research_task.add_argument("--task", required=True)
-    research_task.add_argument("--status", default="open")
+    research_task.add_argument("--status", default="draft")
     research_task.add_argument("--due-at", default=None)
 
     research_status = research_sub.add_parser("status")
@@ -163,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     tasks_add.add_argument("--task", required=True)
     tasks_add.add_argument("--run-id", default=None)
     tasks_add.add_argument("--kind", default="task")
-    tasks_add.add_argument("--status", default="open")
+    tasks_add.add_argument("--status", default="draft")
     tasks_add.add_argument("--parent-task-id", default=None)
     tasks_add.add_argument("--notes", default=None)
     tasks_add.add_argument("--due-at", default=None)
