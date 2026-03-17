@@ -70,3 +70,43 @@ def infer_target_repo(text: str, *, primary_agent: str) -> dict[str, object] | N
     if primary_agent == "code":
         return default_code_repo()
     return None
+
+
+def available_cwd_options(limit: int = 24) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+
+    def add_option(name: str, path: Path, source: str, repo_id: str | None = None) -> None:
+        resolved = path.expanduser().resolve()
+        if not resolved.exists() or not resolved.is_dir():
+            return
+        resolved_str = str(resolved)
+        if resolved_str in seen_paths:
+            return
+        seen_paths.add(resolved_str)
+        option = {"name": name, "path": resolved_str, "source": source}
+        if repo_id:
+            option["repo_id"] = repo_id
+        options.append(option)
+
+    for repo in repo_catalog().values():
+        add_option(str(repo["name"]), Path(str(repo["path"])), "known", str(repo["id"]))
+
+    if len(options) >= limit:
+        return options[:limit]
+
+    try:
+        workspace_entries = sorted(WORKSPACE_ROOT.iterdir(), key=lambda entry: entry.name.lower())
+    except FileNotFoundError:
+        workspace_entries = []
+
+    for entry in workspace_entries:
+        if len(options) >= limit:
+            break
+        if not entry.is_dir():
+            continue
+        if entry.name.startswith(".") or entry.name in {"node_modules", "__pycache__"}:
+            continue
+        add_option(entry.name, entry, "workspace")
+
+    return options

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import BASE_DIR, CODEX_ADD_DIRS, CODEX_BIN
-from .repo_targets import default_code_repo, infer_target_repo, repo_catalog, repo_target_by_id
+from .repo_targets import available_cwd_options, default_code_repo, infer_target_repo, repo_catalog, repo_target_by_id
 from .shared_memory import get_memory_service
 
 
@@ -185,6 +185,7 @@ class PersonalAgentRuntime:
             "active_runs": active_runs,
             "failed_tasks": failed_tasks,
             "recent_results": recent_results,
+            "cwd_options": available_cwd_options(),
             "summary": {
                 "draft_count": len(draft_tasks),
                 "running_count": len(active_runs),

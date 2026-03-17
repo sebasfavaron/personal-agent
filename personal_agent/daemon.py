@@ -57,6 +57,9 @@ HTML_PAGE = """<!doctype html>
       .empty-state { min-height: 132px; display: flex; align-items: center; }
       .item { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
       .item:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+      .cwd-select { width: 100%; }
+      .cwd-custom[hidden] { display: none; }
+      .cwd-hint { font-size: 0.9rem; }
       @media (max-width: 720px) {
         header, main { padding: 18px; }
         .panel { min-height: 0; }
@@ -105,6 +108,8 @@ HTML_PAGE = """<!doctype html>
       </section>
     </main>
     <script>
+      let cwdOptions = [];
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replaceAll('&', '&amp;')
@@ -112,6 +117,9 @@ HTML_PAGE = """<!doctype html>
           .replaceAll('>', '&gt;')
           .replaceAll('"', '&quot;')
           .replaceAll("'", '&#39;');
+      }
+      function normalizePath(value) {
+        return String(value ?? '').trim();
       }
       function renderList(id, items, template, emptyText) {
         const target = document.getElementById(id);
@@ -139,6 +147,7 @@ HTML_PAGE = """<!doctype html>
         document.getElementById('refresh-state').textContent = 'Refreshing...';
         const response = await fetch('/api/status');
         const payload = await response.json();
+        cwdOptions = payload.cwd_options || [];
         renderList('drafts', payload.draft_tasks || [], draftTemplate, 'No drafts.');
         renderList('active-runs', payload.active_runs || [], activeTemplate, 'No active runs.');
         renderList('results', payload.recent_results || [], resultTemplate, 'No results yet.');
@@ -148,13 +157,34 @@ HTML_PAGE = """<!doctype html>
         document.getElementById('refresh-state').textContent = `Updated ${new Date().toLocaleTimeString()}`;
       }
       function draftTemplate(task) {
+        const currentCwd = normalizePath(task.cwd || '');
+        const suggestedName = normalizePath(task.execution?.suggested_repo_name || '');
+        const matchingOption = cwdOptions.find(option => normalizePath(option.path) === currentCwd);
+        const includeCurrent = currentCwd && !matchingOption;
+        const selectOptions = includeCurrent
+          ? [{ name: suggestedName || currentCwd.split('/').filter(Boolean).pop() || 'Current path', path: currentCwd, source: 'current' }, ...cwdOptions]
+          : cwdOptions;
+        const selectedValue = matchingOption ? currentCwd : (includeCurrent ? currentCwd : '__custom__');
+        const customValue = matchingOption || includeCurrent ? '' : currentCwd;
+        const suggestionLabel = matchingOption
+          ? `${matchingOption.name} · ${matchingOption.path}`
+          : (suggestedName ? `${suggestedName} · ${currentCwd}` : currentCwd);
         return `
           <div class="item">
             <a href="/tasks/${encodeURIComponent(task.id)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(task.title)}</strong></a>
             <div class="meta">${escapeHtml(task.id)} / ${escapeHtml(task.permission_mode)}</div>
             <form class="start-form" data-task-id="${escapeHtml(task.id)}">
-              <label>CWD</label>
-              <input name="cwd" value="${escapeHtml(task.cwd || '')}" />
+              <label>Workspace</label>
+              <select name="cwd_select" class="cwd-select">
+                ${selectOptions.map(option => `
+                  <option value="${escapeHtml(option.path)}" ${normalizePath(option.path) === selectedValue ? 'selected' : ''}>
+                    ${escapeHtml(option.name)} (${escapeHtml(option.source)})
+                  </option>
+                `).join('')}
+                <option value="__custom__" ${selectedValue === '__custom__' ? 'selected' : ''}>Custom path</option>
+              </select>
+              <input name="cwd_custom" class="cwd-custom" value="${escapeHtml(customValue)}" placeholder="/Users/sebas/Code/..." ${selectedValue === '__custom__' ? '' : 'hidden'} />
+              <div class="meta cwd-hint">Suggested: ${escapeHtml(suggestionLabel)}</div>
               <label>Prompt</label>
               <textarea name="prompt">${escapeHtml(task.execution?.prompt_preview || '')}</textarea>
               <button type="submit">OK + launch</button>
@@ -191,10 +221,18 @@ HTML_PAGE = """<!doctype html>
       }
       function bindStartForms() {
         document.querySelectorAll('.start-form').forEach(form => {
+          const select = form.querySelector('select[name="cwd_select"]');
+          const customInput = form.querySelector('input[name="cwd_custom"]');
+          const syncCwdMode = () => {
+            const isCustom = select.value === '__custom__';
+            customInput.hidden = !isCustom;
+          };
+          select.addEventListener('change', syncCwdMode);
+          syncCwdMode();
           form.addEventListener('submit', async event => {
             event.preventDefault();
             const taskId = form.getAttribute('data-task-id');
-            const cwd = form.querySelector('input[name="cwd"]').value;
+            const cwd = select.value === '__custom__' ? customInput.value : select.value;
             const prompt = form.querySelector('textarea[name="prompt"]').value;
             const response = await fetch(`/api/tasks/${taskId}/start`, {
               method: 'POST',
