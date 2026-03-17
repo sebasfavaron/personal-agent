@@ -30,6 +30,7 @@ from personal_agent.research_store import (
     list_tasks,
     next_tasks,
     request_approval,
+    resolve_approval,
     search_memory,
     search_and_store_web_results,
     start_research,
@@ -309,8 +310,8 @@ def main() -> int:
             _print(request_approval(args.kind, payload, args.risk_level), args.as_json)
             return 0
         if args.approvals_command == "resolve":
-            print("runtime approval-resume flow removed from direct codex runner", file=sys.stderr)
-            return 1
+            _print(resolve_approval(args.approval_id, args.status, args.note), args.as_json)
+            return 0
 
     if args.command == "tasks":
         if args.tasks_command == "add":

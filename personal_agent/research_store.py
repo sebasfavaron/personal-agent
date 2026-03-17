@@ -61,16 +61,12 @@ def _extract_line_value(content: str, label: str) -> str:
 
 
 def _get_run_memory(service, run_id: str) -> dict[str, Any]:
-    try:
-        memory = service.get_memory(run_id)
-    except (AttributeError, KeyError) as exc:
-        bridged = shared_memory.get_legacy_run_from_shared_memory(run_id)
-        if bridged is not None:
-            raise ValueError("__bridge__") from exc
-        raise ValueError(f"Unknown research run: {run_id}") from exc
-    if memory.get("metadata", {}).get("legacy_kind") != "research_run":
+    related = service.list_memories(source_ref=_run_source_ref(run_id), limit=200)
+    runs = [memory for memory in related if shared_memory.is_personal_memory(memory, record_kind="research_run")]
+    if not runs:
         raise ValueError(f"Unknown research run: {run_id}")
-    return memory
+    exact = next((memory for memory in runs if memory["id"] == run_id), None)
+    return exact or sorted(runs, key=lambda item: (item["updated_at"], item["id"]), reverse=True)[0]
 
 
 def _upsert_run(
@@ -87,8 +83,8 @@ def _upsert_run(
 ) -> dict[str, Any]:
     existing = None
     try:
-        existing = service.get_memory(run_id)
-    except KeyError:
+        existing = _get_run_memory(service, run_id)
+    except ValueError:
         pass
     effective_summary = summary if summary is not None else (existing["summary"] if existing else goal)
     effective_created_at = created_at or (existing["created_at"] if existing else _now())
@@ -110,13 +106,12 @@ def _upsert_run(
             "source_ref": _run_source_ref(run_id),
             "evidence_ref": _run_source_ref(run_id),
             "embedding": service._text_embedding(f"{goal}\n{scope}\n{assumptions}\n{effective_summary}"),
-            "metadata": {
-                "legacy_system": "personal-agent",
-                "legacy_kind": "research_run",
-                "legacy_run_id": run_id,
-                "run_status": status,
-                "completed_at": effective_completed_at,
-            },
+            "metadata": shared_memory.personal_memory_metadata(
+                "research_run",
+                run_id=run_id,
+                run_status=status,
+                completed_at=effective_completed_at,
+            ),
         }
     )
 
@@ -130,19 +125,23 @@ def _record_memory(
     source_ref: str,
     evidence_ref: str | None,
     metadata: dict[str, Any],
+    memory_type: str = "artifact",
+    source_kind: str = "manual",
+    confidence: float = 0.75,
+    freshness: float = 0.75,
 ) -> dict[str, Any]:
     return service.ingest(
         {
             "id": f"mem_{uuid.uuid4().hex}",
-            "type": "artifact",
+            "type": memory_type,
             "scope": "global",
             "status": "active",
-            "source_kind": "manual",
+            "source_kind": source_kind,
             "title": title,
             "content": content,
             "summary": summary,
-            "confidence": 0.75,
-            "freshness": 0.75,
+            "confidence": confidence,
+            "freshness": freshness,
             "source_ref": source_ref,
             "evidence_ref": evidence_ref,
             "embedding": service._text_embedding(content),
@@ -154,7 +153,7 @@ def _record_memory(
 def _run_record(memory: dict[str, Any]) -> dict[str, Any]:
     metadata = memory["metadata"]
     return {
-        "id": memory["id"],
+        "id": metadata.get("run_id") or memory["id"],
         "goal": _extract_line_value(memory["content"], "Goal") or memory["title"].removeprefix("Research run: ").strip(),
         "scope": _extract_line_value(memory["content"], "Scope"),
         "assumptions": _extract_line_value(memory["content"], "Assumptions"),
@@ -170,7 +169,7 @@ def _step_record(memory: dict[str, Any]) -> dict[str, Any]:
     metadata = memory["metadata"]
     return {
         "id": memory["id"],
-        "run_id": metadata.get("legacy_run_id"),
+        "run_id": metadata.get("run_id"),
         "kind": metadata.get("step_kind", "note"),
         "content": memory["content"],
         "status": metadata.get("step_status", "completed"),
@@ -182,7 +181,7 @@ def _source_record(memory: dict[str, Any]) -> dict[str, Any]:
     metadata = memory["metadata"]
     return {
         "id": memory["id"],
-        "run_id": metadata.get("legacy_run_id"),
+        "run_id": metadata.get("run_id"),
         "url": metadata.get("url", ""),
         "title": memory["title"],
         "domain": metadata.get("domain"),
@@ -195,7 +194,7 @@ def _claim_record(memory: dict[str, Any]) -> dict[str, Any]:
     metadata = memory["metadata"]
     return {
         "id": memory["id"],
-        "run_id": metadata.get("legacy_run_id"),
+        "run_id": metadata.get("run_id"),
         "claim": memory["content"],
         "confidence": memory["confidence"],
         "status": metadata.get("claim_status", "tentative"),
@@ -208,7 +207,7 @@ def _artifact_record(memory: dict[str, Any]) -> dict[str, Any]:
     metadata = memory["metadata"]
     return {
         "id": memory["id"],
-        "run_id": metadata.get("legacy_run_id"),
+        "run_id": metadata.get("run_id"),
         "kind": metadata.get("artifact_kind", "artifact"),
         "content": memory["content"],
         "created_at": memory["created_at"],
@@ -237,7 +236,7 @@ def _task_record(task: dict[str, Any]) -> dict[str, Any]:
     metadata = task.get("metadata", {})
     return {
         "id": task["id"],
-        "run_id": metadata.get("legacy_run_id"),
+        "run_id": shared_memory.task_run_id(task),
         "task": task["title"],
         "kind": task["kind"],
         "status": task["status"],
@@ -280,13 +279,13 @@ def start_research(goal: str, scope: str = "", assumptions: str = "") -> dict[st
         summary=goal[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=_run_source_ref(run_id),
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "research_step",
-            "legacy_run_id": run_id,
-            "step_kind": "plan",
-            "step_status": "active",
-        },
+        memory_type="episode",
+        metadata=shared_memory.personal_memory_metadata(
+            "research_step",
+            run_id=run_id,
+            step_kind="plan",
+            step_status="active",
+        ),
     )
     return get_run(run_id)
 
@@ -302,14 +301,14 @@ def add_source(run_id: str, url: str, title: str = "", notes: str = "") -> dict[
         summary=notes[:180] if notes else (title or url)[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=url,
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "source",
-            "legacy_run_id": run_id,
-            "url": url,
-            "domain": domain,
-            "notes": notes,
-        },
+        source_kind="document",
+        metadata=shared_memory.personal_memory_metadata(
+            "research_source",
+            run_id=run_id,
+            url=url,
+            domain=domain,
+            notes=notes,
+        ),
     )
     _upsert_run(
         service,
@@ -351,12 +350,11 @@ def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> d
         summary=effective_title[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=url,
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "artifact",
-            "legacy_run_id": run_id,
-            "artifact_kind": "source_capture",
-        },
+        metadata=shared_memory.personal_memory_metadata(
+            "research_artifact",
+            run_id=run_id,
+            artifact_kind="source_capture",
+        ),
     )
     _record_memory(
         service,
@@ -365,13 +363,13 @@ def capture_source(run_id: str, url: str, title: str = "", notes: str = "") -> d
         summary=f"Captured {url}"[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=url,
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "research_step",
-            "legacy_run_id": run_id,
-            "step_kind": "capture",
-            "step_status": "completed",
-        },
+        memory_type="episode",
+        metadata=shared_memory.personal_memory_metadata(
+            "research_step",
+            run_id=run_id,
+            step_kind="capture",
+            step_status="completed",
+        ),
     )
     _upsert_run(
         service,
@@ -416,12 +414,11 @@ def search_and_store_web_results(run_id: str, query: str, max_results: int = 5) 
         summary=query[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=payload["request_url"],
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "artifact",
-            "legacy_run_id": run_id,
-            "artifact_kind": "search_results",
-        },
+        metadata=shared_memory.personal_memory_metadata(
+            "research_artifact",
+            run_id=run_id,
+            artifact_kind="search_results",
+        ),
     )
     _record_memory(
         service,
@@ -430,13 +427,13 @@ def search_and_store_web_results(run_id: str, query: str, max_results: int = 5) 
         summary=query[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=payload["request_url"],
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "research_step",
-            "legacy_run_id": run_id,
-            "step_kind": "search",
-            "step_status": "completed",
-        },
+        memory_type="episode",
+        metadata=shared_memory.personal_memory_metadata(
+            "research_step",
+            run_id=run_id,
+            step_kind="search",
+            step_status="completed",
+        ),
     )
     _upsert_run(
         service,
@@ -474,13 +471,13 @@ def add_claim(
         summary=claim[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=source_url or None,
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "claim",
-            "legacy_run_id": run_id,
-            "claim_status": status,
-            "source_url": source_url,
-        },
+        confidence=confidence,
+        metadata=shared_memory.personal_memory_metadata(
+            "research_claim",
+            run_id=run_id,
+            claim_status=status,
+            source_url=source_url,
+        ),
     )
     _upsert_run(
         service,
@@ -528,13 +525,11 @@ def add_structured_task(
         parent_task_id=parent_task_id,
         due_at=due_at,
         owner_agent=defaults["owner_agent"],
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "task",
-            "legacy_run_id": run_id,
-            "notes": notes,
-            "execution": defaults["execution"],
-        },
+        metadata=shared_memory.personal_task_metadata(
+            run_id,
+            notes=notes,
+            execution=defaults["execution"],
+        ),
     )
     return _task_record(created)
 
@@ -554,13 +549,12 @@ def add_leisure_item(
         summary=(notes or title)[:180],
         source_ref="personal-agent:leisure",
         evidence_ref=None,
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "leisure_item",
-            "media_type": media_type,
-            "item_status": status,
-            "notes": notes,
-        },
+        metadata=shared_memory.personal_memory_metadata(
+            "leisure_item",
+            media_type=media_type,
+            item_status=status,
+            notes=notes,
+        ),
     )
     return _leisure_record(created)
 
@@ -571,7 +565,7 @@ def list_leisure_items(
 ) -> list[dict[str, Any]]:
     service = _require_service()
     rows = service.list_memories(source_ref="personal-agent:leisure", limit=200)
-    items = [_leisure_record(row) for row in rows if row["metadata"].get("legacy_kind") == "leisure_item"]
+    items = [_leisure_record(row) for row in rows if shared_memory.is_personal_memory(row, record_kind="leisure_item")]
     if media_type is not None:
         items = [item for item in items if item["media_type"] == media_type]
     if status is not None:
@@ -588,11 +582,7 @@ def close_task(task_id: str, status: str = "done") -> dict[str, Any]:
 
 def list_tasks(status: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
     service = _require_service()
-    tasks = [
-        _task_record(task)
-        for task in service.list_tasks(limit=500)
-        if task.get("metadata", {}).get("legacy_kind") == "task"
-    ]
+    tasks = [_task_record(task) for task in service.list_tasks(limit=500) if shared_memory.is_personal_task(task)]
     if status is not None:
         tasks = [task for task in tasks if task["status"] == status]
     if run_id is not None:
@@ -638,29 +628,59 @@ def create_task_intake(
 
 def request_approval(kind: str, payload: dict[str, Any], risk_level: str = "high") -> dict[str, Any]:
     service = _require_service()
-    created = _record_memory(
-        service,
+    task = service.create_task(
         title=f"Approval request: {kind}",
-        content=json.dumps(payload, sort_keys=True),
-        summary=kind,
-        source_ref="personal-agent:approval",
-        evidence_ref=None,
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "approval_request",
-            "approval_kind": kind,
-            "approval_status": "pending",
-            "risk_level": risk_level,
-            "payload": payload,
-        },
+        intent=json.dumps(payload, sort_keys=True),
+        kind="approval_request",
+        status="blocked",
+        project_id=PERSONAL_PROJECT_ID,
+        owner_agent=PERSONAL_AGENT_ID,
+        blocked_reason="Pending human approval",
+        requires_human_input=True,
+        metadata=shared_memory.personal_task_metadata(
+            approval_kind=kind,
+            approval_status="pending",
+            payload=payload,
+            risk_level=risk_level,
+        ),
     )
+    created = service.create_approval(task_id=task["id"], kind=kind, risk_level=risk_level, payload=payload, status="pending")
     return {
         "id": created["id"],
+        "task_id": task["id"],
         "kind": kind,
         "payload": payload,
         "risk_level": risk_level,
         "status": "pending",
-        "requested_at": created["created_at"],
+        "requested_at": created["requested_at"],
+    }
+
+
+def resolve_approval(approval_id: str, status: str, note: str = "") -> dict[str, Any]:
+    service = _require_service()
+    approval = service.resolve_approval(approval_id, status=status, resolution_note=note or None)
+    task = service.get_task(approval["task_id"])
+    task_metadata = dict(task.get("metadata", {}))
+    task_metadata["approval_status"] = status
+    if note:
+        task_metadata["resolution_note"] = note
+    updated_task = service.update_task(
+        task["id"],
+        status="completed",
+        blocked_reason=None,
+        requires_human_input=False,
+        metadata=shared_memory.personal_task_metadata(**task_metadata),
+    )
+    return {
+        "id": approval["id"],
+        "task_id": updated_task["id"],
+        "kind": approval["kind"],
+        "payload": approval["payload"],
+        "risk_level": approval["risk_level"],
+        "status": approval["status"],
+        "requested_at": approval["requested_at"],
+        "resolved_at": approval["resolved_at"],
+        "note": approval["resolution_note"],
     }
 
 
@@ -674,12 +694,11 @@ def close_research(run_id: str, summary: str) -> dict[str, Any]:
         summary=summary[:180],
         source_ref=_run_source_ref(run_id),
         evidence_ref=_run_source_ref(run_id),
-        metadata={
-            "legacy_system": "personal-agent",
-            "legacy_kind": "artifact",
-            "legacy_run_id": run_id,
-            "artifact_kind": "report_summary",
-        },
+        metadata=shared_memory.personal_memory_metadata(
+            "research_artifact",
+            run_id=run_id,
+            artifact_kind="report_summary",
+        ),
     )
     _upsert_run(
         service,
@@ -697,24 +716,16 @@ def close_research(run_id: str, summary: str) -> dict[str, Any]:
 
 def get_run(run_id: str) -> dict[str, Any]:
     service = _require_service()
-    try:
-        run_memory = _get_run_memory(service, run_id)
-    except ValueError as exc:
-        if str(exc) == "__bridge__":
-            bridged = shared_memory.get_legacy_run_from_shared_memory(run_id)
-            if bridged is not None:
-                return bridged
-        raise
+    run_memory = _get_run_memory(service, run_id)
     related = service.list_memories(source_ref=_run_source_ref(run_id), limit=500)
-    steps = [_step_record(row) for row in related if row["metadata"].get("legacy_kind") == "research_step"]
-    sources = [_source_record(row) for row in related if row["metadata"].get("legacy_kind") == "source"]
-    claims = [_claim_record(row) for row in related if row["metadata"].get("legacy_kind") == "claim"]
-    artifacts = [_artifact_record(row) for row in related if row["metadata"].get("legacy_kind") == "artifact"]
+    steps = [_step_record(row) for row in related if shared_memory.is_personal_memory(row, record_kind="research_step")]
+    sources = [_source_record(row) for row in related if shared_memory.is_personal_memory(row, record_kind="research_source")]
+    claims = [_claim_record(row) for row in related if shared_memory.is_personal_memory(row, record_kind="research_claim")]
+    artifacts = [_artifact_record(row) for row in related if shared_memory.is_personal_memory(row, record_kind="research_artifact")]
     tasks = [
         _task_record(task)
         for task in service.list_tasks(limit=500)
-        if task.get("metadata", {}).get("legacy_kind") == "task"
-        and task.get("metadata", {}).get("legacy_run_id") == run_id
+        if shared_memory.is_personal_task(task) and shared_memory.task_run_id(task) == run_id
     ]
     return {
         "run": _run_record(run_memory),
@@ -726,23 +737,24 @@ def get_run(run_id: str) -> dict[str, Any]:
     }
 
 
-def list_approvals(status: str = "pending") -> list[dict[str, Any]]:
+def list_approvals(status: str | None = "pending") -> list[dict[str, Any]]:
     service = _require_service()
     approvals = []
-    for memory in service.list_memories(source_ref="personal-agent:approval", limit=200):
-        metadata = memory["metadata"]
-        if metadata.get("legacy_kind") != "approval_request":
-            continue
-        if metadata.get("approval_status", "pending") != status:
+    for approval in service.list_approvals(status=status, limit=200):
+        task = service.get_task(approval["task_id"])
+        if not shared_memory.is_personal_task(task):
             continue
         approvals.append(
             {
-                "id": memory["id"],
-                "kind": metadata.get("approval_kind"),
-                "payload": metadata.get("payload", {}),
-                "risk_level": metadata.get("risk_level", "high"),
-                "status": metadata.get("approval_status", "pending"),
-                "requested_at": memory["created_at"],
+                "id": approval["id"],
+                "task_id": approval["task_id"],
+                "kind": approval["kind"],
+                "payload": approval["payload"],
+                "risk_level": approval["risk_level"],
+                "status": approval["status"],
+                "requested_at": approval["requested_at"],
+                "resolved_at": approval["resolved_at"],
+                "note": approval["resolution_note"],
             }
         )
     return sorted(approvals, key=lambda item: item["requested_at"], reverse=True)
@@ -756,18 +768,25 @@ def search_memory(query: str) -> dict[str, Any]:
     leisure_items = []
     for result in shared["results"]:
         memory = result["memory"]
-        kind = memory.get("metadata", {}).get("legacy_kind")
+        if not shared_memory.is_personal_memory(memory):
+            continue
+        kind = shared_memory.memory_kind(memory)
         if kind == "research_run":
             runs.append(_run_record(memory))
-        elif kind == "claim":
+        elif kind == "research_claim":
             claims.append(_claim_record(memory))
         elif kind == "leisure_item":
             leisure_items.append(_leisure_record(memory))
     tasks = [
         _task_record(task)
         for task in service.list_tasks(limit=500)
-        if task.get("metadata", {}).get("legacy_kind") == "task"
+        if shared_memory.is_personal_task(task)
         and _matches_query(query, task["title"], task["intent"], task.get("metadata", {}).get("notes"))
+    ][:20]
+    approvals = [
+        approval
+        for approval in list_approvals(status=None)
+        if _matches_query(query, approval["kind"], json.dumps(approval["payload"], sort_keys=True), approval.get("note"))
     ][:20]
     leisure_matches = [
         item
@@ -781,5 +800,6 @@ def search_memory(query: str) -> dict[str, Any]:
         "runs": runs,
         "claims": claims,
         "tasks": tasks,
+        "approvals": approvals,
         "leisure_items": leisure_matches or leisure_items,
     }
