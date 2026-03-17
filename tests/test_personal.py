@@ -216,13 +216,19 @@ class PersonalAgentTests(unittest.TestCase):
 
         self.fake_operational_memory = FakeOperationalMemoryService(str(config.SHARED_MEMORY_DB_PATH))
         self.runtime_memory_patcher = patch("personal_agent.runtime.get_memory_service", return_value=self.fake_operational_memory)
+        self.research_store_memory_patcher = patch(
+            "personal_agent.research_store.shared_memory.get_memory_service",
+            return_value=self.fake_operational_memory,
+        )
         self.runtime_memory_patcher.start()
+        self.research_store_memory_patcher.start()
 
     def tearDown(self) -> None:
         from personal_agent import config
         from personal_agent import shared_memory
 
         self.runtime_memory_patcher.stop()
+        self.research_store_memory_patcher.stop()
         config.BASE_DIR = self._original_config["BASE_DIR"]
         config.SHARED_MEMORY_ROOT = self._original_config["SHARED_MEMORY_ROOT"]
         config.SHARED_MEMORY_SRC_DIR = self._original_config["SHARED_MEMORY_SRC_DIR"]
@@ -262,6 +268,23 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn("ai-dev-workflow", execution["suggested_cwd"])
         self.assertEqual(execution["permission_mode"], "danger-full-access")
         self.assertIn("Outputs", execution["prompt_preview"])
+
+    def test_add_structured_task_creates_runtime_visible_draft(self) -> None:
+        from personal_agent.research_store import add_structured_task
+
+        parent_payload = add_structured_task(None, "Unify open and draft into one backlog state", kind="task")
+        child_payload = add_structured_task(None, "Update task creation defaults", kind="subtask", parent_task_id=parent_payload["id"])
+
+        parent = self.fake_operational_memory.get_task(parent_payload["id"])
+        child = self.fake_operational_memory.get_task(child_payload["id"])
+
+        self.assertEqual(parent["status"], "draft")
+        self.assertEqual(parent["owner_agent"], "personal-agent")
+        self.assertEqual(parent["project_id"], "proj_personal_agent")
+        self.assertEqual(parent["repo_id"], "repo_ai_dev_workflow")
+        self.assertIn("execution", parent["metadata"])
+        self.assertEqual(child["status"], "draft")
+        self.assertEqual(child["parent_task_id"], parent["id"])
 
     def test_runtime_start_task_launches_codex_with_confirmed_cwd(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime
@@ -498,6 +521,29 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(payload["active_runs"][0]["id"], running["id"])
         self.assertEqual(payload["failed_tasks"][0]["id"], failed["id"])
         self.assertEqual(payload["recent_results"][0]["task_title"], done["title"])
+
+    def test_next_tasks_prefers_draft_tasks(self) -> None:
+        from personal_agent.research_store import next_tasks
+
+        self.fake_operational_memory.create_task(
+            title="Open legacy",
+            intent="old",
+            kind="task",
+            status="open",
+            metadata={"legacy_kind": "task"},
+        )
+        draft = self.fake_operational_memory.create_task(
+            title="Draft task",
+            intent="new",
+            kind="task",
+            status="draft",
+            metadata={"legacy_kind": "task"},
+        )
+
+        payload = next_tasks(limit=5)
+
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["id"], draft["id"])
 
     def test_daemon_http_api_covers_status_intake_and_start(self) -> None:
         from personal_agent.daemon import PersonalAgentHandler

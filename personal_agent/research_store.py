@@ -7,8 +7,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import shared_memory
+from .repo_targets import default_code_repo, infer_target_repo
 from .source_capture import fetch_url_capture
 from .web_search import search_web
+
+
+PERSONAL_AGENT_ID = "personal-agent"
+PERSONAL_PROJECT_ID = "proj_personal_agent"
 
 
 def _now() -> str:
@@ -207,6 +212,24 @@ def _artifact_record(memory: dict[str, Any]) -> dict[str, Any]:
         "kind": metadata.get("artifact_kind", "artifact"),
         "content": memory["content"],
         "created_at": memory["created_at"],
+    }
+
+
+def _task_execution_defaults(task: str) -> dict[str, Any]:
+    target_repo = infer_target_repo(task, primary_agent="code") or default_code_repo()
+    suggested_cwd = str(target_repo["path"])
+    return {
+        "project_id": PERSONAL_PROJECT_ID,
+        "repo_id": str(target_repo["id"]),
+        "owner_agent": PERSONAL_AGENT_ID,
+        "execution": {
+            "suggested_repo_id": target_repo["id"],
+            "suggested_repo_name": target_repo["name"],
+            "suggested_cwd": suggested_cwd,
+            "cwd": suggested_cwd,
+            "permission_mode": "danger-full-access",
+            "prompt_preview": task,
+        },
     }
 
 
@@ -479,7 +502,7 @@ def add_claim(
     }
 
 
-def add_task(run_id: str | None, task: str, status: str = "open", due_at: str | None = None) -> dict[str, Any]:
+def add_task(run_id: str | None, task: str, status: str = "draft", due_at: str | None = None) -> dict[str, Any]:
     return add_structured_task(run_id, task, kind="task", status=status, due_at=due_at)
 
 
@@ -488,24 +511,29 @@ def add_structured_task(
     task: str,
     *,
     kind: str = "task",
-    status: str = "open",
+    status: str = "draft",
     parent_task_id: str | None = None,
     notes: str | None = None,
     due_at: str | None = None,
 ) -> dict[str, Any]:
     service = _require_service()
+    defaults = _task_execution_defaults(task)
     created = service.create_task(
         title=task,
         intent=notes or task,
         kind=kind,
         status=status,
+        project_id=defaults["project_id"],
+        repo_id=defaults["repo_id"],
         parent_task_id=parent_task_id,
         due_at=due_at,
+        owner_agent=defaults["owner_agent"],
         metadata={
             "legacy_system": "personal-agent",
             "legacy_kind": "task",
             "legacy_run_id": run_id,
             "notes": notes,
+            "execution": defaults["execution"],
         },
     )
     return _task_record(created)
@@ -573,7 +601,7 @@ def list_tasks(status: str | None = None, run_id: str | None = None) -> list[dic
 
 
 def next_tasks(limit: int = 10) -> list[dict[str, Any]]:
-    tasks = [task for task in list_tasks(status="open") if task["kind"] in {"task", "subtask", "clarification", "research_note"}]
+    tasks = [task for task in list_tasks(status="draft") if task["kind"] in {"task", "subtask", "clarification", "research_note"}]
     tasks.sort(key=lambda item: (0 if item["kind"] == "subtask" else 1, item["created_at"], item["id"]))
     return tasks[:limit]
 
@@ -595,9 +623,9 @@ def create_task_intake(
     for note in research_notes:
         add_structured_task(run_id, note, kind="research_note", status="noted")
 
-    parent = add_structured_task(run_id, parent_task, kind="task", status="open")
+    parent = add_structured_task(run_id, parent_task, kind="task", status="draft")
     created_subtasks = [
-        add_structured_task(run_id, subtask, kind="subtask", status="open", parent_task_id=parent["id"])
+        add_structured_task(run_id, subtask, kind="subtask", status="draft", parent_task_id=parent["id"])
         for subtask in subtasks
     ]
 
