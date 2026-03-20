@@ -8,7 +8,7 @@ from typing import Any
 
 from .planner import build_route_payload, classify_request
 from .research_store import add_structured_task
-from .shared_memory import get_memory_service, personal_memory_metadata
+from .shared_memory import PERSONAL_AGENT_ID, get_memory_service
 
 PERSONAL_ROOT = Path(__file__).resolve().parent.parent
 BALLBOX_COMPANY_ROOT = PERSONAL_ROOT.parent / "ballbox-company-agent"
@@ -33,9 +33,11 @@ def _mirror_route(text: str, route: dict[str, Any]) -> dict[str, Any] | None:
     return service.ingest(
         {
             "id": f"router_{stable_id}",
-            "type": "task",
+            "type": "episode",
+            "subtype": "router_handoff",
             "scope": "agent",
             "status": "active",
+            "origin_agent": PERSONAL_AGENT_ID,
             "source_kind": "manual",
             "title": f"Router handoff: {route['primary_agent']}",
             "content": content,
@@ -46,12 +48,9 @@ def _mirror_route(text: str, route: dict[str, Any]) -> dict[str, Any] | None:
             "evidence_ref": "personal-agent:router",
             "embedding": service._text_embedding(content),
             "metadata": {
-                **personal_memory_metadata(
-                    "router_handoff",
-                    primary_agent=route["primary_agent"],
-                    secondary_agent=route.get("secondary_agent"),
-                ),
-                "kind": "router_handoff",
+                "primary_agent": route["primary_agent"],
+                "secondary_agent": route.get("secondary_agent"),
+                "reason": route["reason"],
             },
         }
     )

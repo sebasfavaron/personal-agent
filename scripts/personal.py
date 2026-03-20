@@ -26,11 +26,8 @@ from personal_agent.research_store import (
     create_task_intake,
     get_run,
     list_leisure_items,
-    list_approvals,
     list_tasks,
     next_tasks,
-    request_approval,
-    resolve_approval,
     search_memory,
     search_and_store_web_results,
     start_research,
@@ -141,21 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     route = subparsers.add_parser("route")
     route.add_argument("--input", required=True)
     route.add_argument("--execute", action="store_true")
-
-    approvals = subparsers.add_parser("approvals")
-    approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
-    approvals_list = approvals_sub.add_parser("list")
-    approvals_list.add_argument("--status", default="pending")
-
-    approvals_request = approvals_sub.add_parser("request")
-    approvals_request.add_argument("--kind", required=True)
-    approvals_request.add_argument("--risk-level", default="high")
-    approvals_request.add_argument("--payload", required=True, help="JSON payload")
-
-    approvals_resolve = approvals_sub.add_parser("resolve")
-    approvals_resolve.add_argument("--approval-id", required=True)
-    approvals_resolve.add_argument("--status", required=True, choices=["approved", "rejected"])
-    approvals_resolve.add_argument("--note", default="")
 
     tasks = subparsers.add_parser("tasks")
     tasks_sub = tasks.add_subparsers(dest="tasks_command", required=True)
@@ -300,18 +282,6 @@ def main() -> int:
     if args.command == "route":
         _print(route_request(args.input, execute=args.execute), args.as_json)
         return 0
-
-    if args.command == "approvals":
-        if args.approvals_command == "list":
-            _print(list_approvals(args.status), args.as_json)
-            return 0
-        if args.approvals_command == "request":
-            payload = json.loads(args.payload)
-            _print(request_approval(args.kind, payload, args.risk_level), args.as_json)
-            return 0
-        if args.approvals_command == "resolve":
-            _print(resolve_approval(args.approval_id, args.status, args.note), args.as_json)
-            return 0
 
     if args.command == "tasks":
         if args.tasks_command == "add":

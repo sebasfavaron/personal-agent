@@ -34,7 +34,7 @@ System map and machine-recreation guide:
 This repository now contains:
 
 - shared-memory-backed persistence for research runs
-- source, claim, task, and approval tracking
+- source, claim, leisure, and task tracking
 - memory search over stored runs, claims, and tasks
 - Codex skill wrappers owned by this repo
 - task intake persistence with parent tasks and subtasks
@@ -46,16 +46,14 @@ This repository now contains:
 
 Durable shared memory lives in the sibling project at `~/agents-database`.
 
-- research, leisure, approvals, and task intake write directly to shared memory
+- research, leisure, and task intake write directly to shared memory
 - `memory-search` reads shared memory directly
-- approvals use the native shared-memory approvals table
-- `memory-migrate` rewrites legacy personal-agent metadata into the canonical shared-memory schema
+- `memory-migrate` runs the canonical v2 migration owned by `shared-agent-memory`
 - `research status --run-id <id>` resolves runs from canonical shared-memory records only
 
-Default shared-memory path discovery:
+Editable install required:
 
-- tries `~/agents-database/src` first
-- then falls back to sibling discovery heuristics if the direct path is unavailable
+- `pip install -e ~/agents-database`
 - database defaults to `<shared-memory-root>/data/shared-agent-memory.sqlite3`
 - when launching Codex from `personal-agent`, add `--add-dir ~/agents-database` so sandboxed Codex runs can write the canonical DB in place
 
@@ -109,8 +107,6 @@ python3 scripts/personal.py memory-search --query "X"
 python3 scripts/personal.py memory-migrate
 python3 scripts/personal.py route --input "Ballbox necesita fix en repo de pagos" --execute
 python3 scripts/personal.py --json status
-python3 scripts/personal.py approvals list
-python3 scripts/personal.py --json approvals resolve --approval-id <id> --status approved --note "safe to proceed"
 python3 scripts/personal.py tasks next
 python3 scripts/personal.py leisure add --title "Severance" --media-type series
 python3 scripts/personal.py leisure list --media-type series

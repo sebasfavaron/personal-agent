@@ -174,7 +174,7 @@ def _planning_prompt(text: str, memory_context: list[dict[str, Any]]) -> str:
         [
             "You are the planner for personal-agent.",
             "Decide routing and the first execution plan.",
-            "Keep Python as the shell for persistence, approvals, auditability, and shared DB state.",
+            "Keep Python as the shell for persistence, task/artifact auditability, and shared DB state.",
             "Available primary_agent values: personal, company, code.",
             "Available delegation_target values: null, ballbox-company-agent.",
             "Return JSON only with this exact shape:",

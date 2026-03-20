@@ -7,7 +7,6 @@ What you get today:
 - local SQLite storage
 - research run tracking
 - Codex skill wrappers
-- approval queue foundation
 - task intake persistence with subtasks
 - request routing across personal, company, and code specialists
 
@@ -35,6 +34,12 @@ cd personal-agent
 
 ```bash
 python3 --version
+```
+
+## Install Shared Memory Dependency
+
+```bash
+pip install -e ~/agents-database
 ```
 
 ## Run Tests

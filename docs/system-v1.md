@@ -12,7 +12,7 @@
   - canonical shared state
   - `shared-agent-memory.sqlite3`
   - memory service
-  - operational tables for tasks, task runs, approvals, artifacts, handoffs
+  - operational tables for tasks, task runs, artifacts
 - `ballbox-company-agent`
   - company/domain subagent
 - `ai-dev-workflow`
@@ -106,7 +106,7 @@ Operator note:
 - `personal-agent` status command returns dashboard JSON
 - `personal.py` accepts `--json` before or after subcommands
 - dashboard loads at `:8082`
-- shared DB contains tasks, runs, artifacts, handoffs
+- shared DB contains tasks, runs, artifacts
 - draft tasks must not launch until the human confirms or edits the inferred cwd
 - `codex exec` is available on PATH
 

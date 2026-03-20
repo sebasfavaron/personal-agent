@@ -4,6 +4,7 @@ import json
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -396,7 +397,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
       <div class="meta">artifact: {artifact_id}</div>
       <div class="meta">task: {task_id}</div>
       <div class="meta">type: {artifact_type}</div>
-      <div class="artifact-rendered">{self._render_markdown(str(artifact["content"]))}</div>
+      <div class="artifact-rendered">{self._render_markdown(str(artifact["content"]), artifact.get("metadata", {}).get("cwd"))}</div>
       <details>
         <summary>Raw markdown</summary>
         <div class="artifact-body">{content}</div>
@@ -467,7 +468,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             .replace("'", "&#39;")
         )
 
-    def _render_markdown(self, content: str) -> str:
+    def _render_markdown(self, content: str, base_path: str | None = None) -> str:
         if not content.strip():
             return "<p class=\"muted\">Empty artifact.</p>"
         chunks: list[str] = []
@@ -480,14 +481,14 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             nonlocal paragraph
             if not paragraph:
                 return
-            chunks.append(f"<p>{self._render_inline_markdown(' '.join(paragraph))}</p>")
+            chunks.append(f"<p>{self._render_inline_markdown(' '.join(paragraph), base_path)}</p>")
             paragraph = []
 
         def flush_list() -> None:
             nonlocal list_items
             if not list_items:
                 return
-            chunks.append("<ul>" + "".join(f"<li>{self._render_inline_markdown(item)}</li>" for item in list_items) + "</ul>")
+            chunks.append("<ul>" + "".join(f"<li>{self._render_inline_markdown(item, base_path)}</li>" for item in list_items) + "</ul>")
             list_items = []
 
         def flush_code() -> None:
@@ -520,7 +521,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
                 flush_list()
                 level = min(len(line) - len(line.lstrip("#")), 3)
                 text = line[level:].strip()
-                chunks.append(f"<h{level + 1}>{self._render_inline_markdown(text)}</h{level + 1}>")
+                chunks.append(f"<h{level + 1}>{self._render_inline_markdown(text, base_path)}</h{level + 1}>")
                 continue
             if line.startswith("- "):
                 flush_paragraph()
@@ -534,26 +535,31 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         flush_code()
         return "".join(chunks)
 
-    def _render_inline_markdown(self, value: str) -> str:
+    def _render_inline_markdown(self, value: str, base_path: str | None = None) -> str:
         value = self._escape_html(value)
-        value = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", self._render_markdown_link, value)
+        value = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", lambda match: self._render_markdown_link(match, base_path), value)
         value = re.sub(r"`([^`]+)`", r"<code>\1</code>", value)
         value = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", value)
         value = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", value)
         return value
 
-    def _render_markdown_link(self, match: re.Match[str]) -> str:
-        label = self._render_inline_markdown(match.group(1))
-        href = self._sanitize_href(match.group(2))
+    def _render_markdown_link(self, match: re.Match[str], base_path: str | None = None) -> str:
+        label = self._render_inline_markdown(match.group(1), base_path)
+        href = self._sanitize_href(match.group(2), base_path)
         if not href:
             return match.group(0)
         return f'<a href="{href}" target="_blank" rel="noreferrer">{label}</a>'
 
-    def _sanitize_href(self, href: str) -> str:
+    def _sanitize_href(self, href: str, base_path: str | None = None) -> str:
         candidate = href.strip()
         parsed = urlparse(candidate)
-        if parsed.scheme in {"http", "https", "mailto"}:
+        if parsed.scheme in {"http", "https", "mailto", "file"}:
             return candidate
+        if self._is_internal_route(candidate):
+            return candidate
+        file_href = self._normalize_file_href(candidate, base_path)
+        if file_href:
+            return file_href
         if candidate.startswith(("/", "./", "../", "#")):
             return candidate
         if self._looks_like_external_host(candidate):
@@ -564,6 +570,29 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         if self._looks_like_relative_href(candidate):
             return candidate
         return ""
+
+    def _normalize_file_href(self, href: str, base_path: str | None = None) -> str:
+        if href.startswith(("http://", "https://", "mailto:", "file://", "#", "//")):
+            return ""
+        candidate_paths: list[Path] = []
+        if href.startswith("~/"):
+            candidate_paths.append(Path(href).expanduser())
+        elif href.startswith("/"):
+            candidate_paths.append(Path(href))
+        elif base_path:
+            candidate_paths.append(Path(base_path).expanduser() / href)
+        if not candidate_paths:
+            return ""
+        for path in candidate_paths:
+            try:
+                resolved = path.resolve(strict=False)
+            except OSError:
+                continue
+            return resolved.as_uri()
+        return ""
+
+    def _is_internal_route(self, href: str) -> bool:
+        return href == "/" or href.startswith(("/artifacts/", "/tasks/", "/api/"))
 
     def _looks_like_external_host(self, href: str) -> bool:
         if re.search(r"\s", href):
