@@ -479,6 +479,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         in_code_block = False
         source_refs = self._collect_source_refs(content)
         in_sources_section = False
+        table_rows: list[str] = []
 
         def flush_paragraph() -> None:
             nonlocal paragraph
@@ -500,6 +501,34 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             chunks.append("<ul>" + "".join(rendered_items) + "</ul>")
             list_items = []
 
+        def flush_table() -> None:
+            nonlocal table_rows
+            if not table_rows:
+                return
+            if len(table_rows) < 2:
+                for row in table_rows:
+                    chunks.append(f"<p>{row}</p>")
+                table_rows = []
+                return
+            header = table_rows[0]
+            sep = table_rows[1] if len(table_rows) > 1 else ""
+            if not re.match(r"^\s*\|[\s\-:|\t]+\|\s*$", sep):
+                for row in table_rows:
+                    chunks.append(f"<p>{row}</p>")
+                table_rows = []
+                return
+            header_cells = [c.strip() for c in re.split(r"\s*\|\s*", header.strip()) if c.strip()]
+            chunks.append("<table>")
+            chunks.append("<thead><tr>" + "".join(f"<th>{self._render_inline_markdown(cell, base_path, source_refs)}</th>" for cell in header_cells) + "</tr></thead>")
+            chunks.append("<tbody>")
+            for row in table_rows[2:]:
+                if not re.match(r"^\s*\|", row):
+                    continue
+                cells = [c.strip() for c in re.split(r"\s*\|\s*", row.strip()) if c.strip()]
+                chunks.append("<tr>" + "".join(f"<td>{self._render_inline_markdown(cell, base_path, source_refs)}</td>" for cell in cells) + "</tr>")
+            chunks.append("</tbody></table>")
+            table_rows = []
+
         def flush_code() -> None:
             nonlocal code_lines
             if not code_lines:
@@ -512,6 +541,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             if line.startswith("```"):
                 flush_paragraph()
                 flush_list()
+                flush_table()
                 if in_code_block:
                     flush_code()
                     in_code_block = False
@@ -524,15 +554,30 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             if not line.strip():
                 flush_paragraph()
                 flush_list()
+                flush_table()
                 continue
             if line.startswith("#"):
                 flush_paragraph()
                 flush_list()
+                flush_table()
                 level = min(len(line) - len(line.lstrip("#")), 3)
-                text = line[level:].strip()
+                text = line[level:].lstrip("#").strip()
                 in_sources_section = self._is_sources_heading(text)
-                chunks.append(f"<h{level + 1}>{self._render_inline_markdown(text, base_path, source_refs)}</h{level + 1}>")
+                heading_id = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+                chunks.append(f'<h{level + 1} id="{heading_id}">{self._render_inline_markdown(text, base_path, source_refs)}</h{level + 1}>')
                 continue
+            if line.strip() in ("---", "***", "___"):
+                flush_paragraph()
+                flush_list()
+                flush_table()
+                chunks.append("<hr>")
+                continue
+            if re.match(r"^\s*\|", line):
+                flush_paragraph()
+                flush_list()
+                table_rows.append(line)
+                continue
+            flush_table()
             if line.startswith("- "):
                 flush_paragraph()
                 item = line[2:]
@@ -544,6 +589,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
 
         flush_paragraph()
         flush_list()
+        flush_table()
         flush_code()
         return "".join(chunks)
 
