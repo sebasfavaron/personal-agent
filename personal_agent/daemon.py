@@ -387,6 +387,8 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
       .artifact-body {{ white-space: pre-wrap; overflow-wrap: anywhere; background: white; border: 1px solid #dccdb9; border-radius: 18px; padding: 18px; }}
       .artifact-rendered pre {{ white-space: pre-wrap; background: #f7f1e8; border: 1px solid #dccdb9; border-radius: 12px; padding: 12px; overflow-x: auto; }}
       .artifact-rendered code {{ background: #f7f1e8; padding: 1px 4px; border-radius: 6px; }}
+      .artifact-rendered a {{ font-size: 0.8em; }}
+      .artifact-rendered a + a {{ margin-left: 0.3em; }}
     </style>
   </head>
   <body>
@@ -472,9 +474,11 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             return "<p class=\"muted\">Empty artifact.</p>"
         chunks: list[str] = []
         paragraph: list[str] = []
-        list_items: list[str] = []
+        list_items: list[tuple[str, str | None]] = []
         code_lines: list[str] = []
         in_code_block = False
+        source_refs = self._collect_source_refs(content)
+        in_sources_section = False
 
         def flush_paragraph() -> None:
             nonlocal paragraph
@@ -487,7 +491,13 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             nonlocal list_items
             if not list_items:
                 return
-            chunks.append("<ul>" + "".join(f"<li>{self._render_inline_markdown(item)}</li>" for item in list_items) + "</ul>")
+            rendered_items: list[str] = []
+            for item, item_id in list_items:
+                id_attr = f' id="{item_id}"' if item_id else ""
+                rendered_items.append(
+                    f"<li{id_attr}>{self._render_inline_markdown(item, base_path, source_refs)}</li>"
+                )
+            chunks.append("<ul>" + "".join(rendered_items) + "</ul>")
             list_items = []
 
         def flush_code() -> None:
@@ -520,11 +530,14 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
                 flush_list()
                 level = min(len(line) - len(line.lstrip("#")), 3)
                 text = line[level:].strip()
-                chunks.append(f"<h{level + 1}>{self._render_inline_markdown(text)}</h{level + 1}>")
+                in_sources_section = self._is_sources_heading(text)
+                chunks.append(f"<h{level + 1}>{self._render_inline_markdown(text, base_path, source_refs)}</h{level + 1}>")
                 continue
             if line.startswith("- "):
                 flush_paragraph()
-                list_items.append(line[2:])
+                item = line[2:]
+                item_id = self._source_ref_id(item) if in_sources_section else None
+                list_items.append((item, item_id))
                 continue
             flush_list()
             paragraph.append(line)
@@ -534,22 +547,75 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         flush_code()
         return "".join(chunks)
 
-    def _render_inline_markdown(self, value: str) -> str:
+    def _render_inline_markdown(
+        self,
+        value: str,
+        base_path: str | None = None,
+        source_refs: set[str] | None = None,
+    ) -> str:
         value = self._escape_html(value)
-        value = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", self._render_markdown_link, value)
+        value = re.sub(
+            r"\[([^\]]+)\]\(([^)\s]+)\)",
+            lambda match: self._render_markdown_link(match, base_path, source_refs),
+            value,
+        )
+        value = re.sub(
+            r"\[(S\d+)\]",
+            lambda match: self._render_source_ref_link(match.group(1), source_refs),
+            value,
+        )
         value = re.sub(r"`([^`]+)`", r"<code>\1</code>", value)
         value = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", value)
         value = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", value)
         return value
 
-    def _render_markdown_link(self, match: re.Match[str]) -> str:
-        label = self._render_inline_markdown(match.group(1))
-        href = self._sanitize_href(match.group(2))
+    def _render_markdown_link(
+        self,
+        match: re.Match[str],
+        base_path: str | None = None,
+        source_refs: set[str] | None = None,
+    ) -> str:
+        label = self._render_inline_markdown(match.group(1), base_path, source_refs)
+        href = self._sanitize_href(match.group(2), base_path)
         if not href:
             return match.group(0)
+        if href.startswith("#") or self._is_internal_route(href):
+            return f'<a href="{href}">{label}</a>'
         return f'<a href="{href}" target="_blank" rel="noreferrer">{label}</a>'
 
-    def _sanitize_href(self, href: str) -> str:
+    def _collect_source_refs(self, content: str) -> set[str]:
+        refs: set[str] = set()
+        in_sources_section = False
+        for raw_line in content.splitlines():
+            line = raw_line.rstrip()
+            if line.startswith("#"):
+                text = line.lstrip("#").strip()
+                in_sources_section = self._is_sources_heading(text)
+                continue
+            if not in_sources_section:
+                continue
+            match = re.match(r"-\s+\[(S\d+)\]", line)
+            if match:
+                refs.add(match.group(1))
+        return refs
+
+    def _is_sources_heading(self, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        return normalized in {"sources", "fuentes primarias", "fuentes primarias usadas"}
+
+    def _source_ref_id(self, value: str) -> str | None:
+        match = re.match(r"\[(S\d+)\]", value.strip())
+        if not match:
+            return None
+        return f"ref-{match.group(1).lower()}"
+
+    def _render_source_ref_link(self, ref: str, source_refs: set[str] | None = None) -> str:
+        if source_refs and ref in source_refs:
+            href = f"#ref-{ref.lower()}"
+            return f'<a href="{href}">[{ref}]</a>'
+        return f"[{ref}]"
+
+    def _sanitize_href(self, href: str, base_path: str | None = None) -> str:
         candidate = href.strip()
         parsed = urlparse(candidate)
         if parsed.scheme in {"http", "https", "mailto"}:
