@@ -890,7 +890,7 @@ class PersonalAgentTests(unittest.TestCase):
             "Abrir [USECASE.md](http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89) y `code`."
         )
         self.assertIn(
-            '<a href="http://127.0.0.1:8082/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89" target="_blank" rel="noreferrer">USECASE.md</a>',
+            '<a href="/artifacts/art_b90cb99f638c45ecbb358d2f51cdad89">USECASE.md</a>',
             rendered,
         )
         self.assertIn(
@@ -914,7 +914,7 @@ class PersonalAgentTests(unittest.TestCase):
         )
         self.assertIn("[safe](javascript:alert(1))", page)
         self.assertIn(
-            '<a href="http://127.0.0.1:8082/artifacts/art-1" target="_blank" rel="noreferrer">ok</a>',
+            '<a href="/artifacts/art-1">ok</a>',
             page,
         )
 

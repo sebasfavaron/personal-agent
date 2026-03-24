@@ -469,7 +469,7 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             .replace("'", "&#39;")
         )
 
-    def _render_markdown(self, content: str) -> str:
+    def _render_markdown(self, content: str, base_path: str | None = None) -> str:
         if not content.strip():
             return "<p class=\"muted\">Empty artifact.</p>"
         chunks: list[str] = []
@@ -583,6 +583,9 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
             return f'<a href="{href}">{label}</a>'
         return f'<a href="{href}" target="_blank" rel="noreferrer">{label}</a>'
 
+    def _is_internal_route(self, href: str) -> bool:
+        return href == "/" or href.startswith(("/artifacts/", "/tasks/", "/api/"))
+
     def _collect_source_refs(self, content: str) -> set[str]:
         refs: set[str] = set()
         in_sources_section = False
@@ -619,6 +622,9 @@ class PersonalAgentHandler(BaseHTTPRequestHandler):
         candidate = href.strip()
         parsed = urlparse(candidate)
         if parsed.scheme in {"http", "https", "mailto"}:
+            host = parsed.netloc.split(":")[0]
+            if host in {"127.0.0.1", "localhost"} and parsed.path.startswith("/"):
+                return parsed.path + (f"#{parsed.fragment}" if parsed.fragment else "")
             return candidate
         if candidate.startswith(("/", "./", "../", "#")):
             return candidate
