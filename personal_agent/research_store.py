@@ -739,6 +739,37 @@ def get_run(run_id: str) -> dict[str, Any]:
 
 def list_approvals(status: str | None = "pending") -> list[dict[str, Any]]:
     service = _require_service()
+    if not hasattr(service, "list_approvals"):
+        tasks = [task for task in service.list_tasks(limit=500) if shared_memory.is_personal_task(task)]
+        approvals = []
+        for task in tasks:
+            metadata = task.get("metadata", {})
+            if task.get("kind") != "approval_request" and "approval" not in metadata and "approval_kind" not in metadata:
+                continue
+            approval_meta = metadata.get("approval") or {}
+            approval_status = approval_meta.get("status") or metadata.get("approval_status")
+            if status is not None and approval_status != status:
+                continue
+            approval_kind = approval_meta.get("kind") or metadata.get("approval_kind") or "external_action"
+            approval_payload = approval_meta.get("payload") or metadata.get("payload") or {}
+            approval_risk = approval_meta.get("risk_level") or metadata.get("risk_level") or "high"
+            requested_at = approval_meta.get("requested_at") or task.get("created_at")
+            resolved_at = approval_meta.get("resolved_at")
+            note = approval_meta.get("resolution_note") or metadata.get("resolution_note")
+            approvals.append(
+                {
+                    "id": metadata.get("approval_id") or metadata.get("approval_memory_id") or task["id"],
+                    "task_id": task["id"],
+                    "kind": approval_kind,
+                    "payload": approval_payload,
+                    "risk_level": approval_risk,
+                    "status": approval_status or "pending",
+                    "requested_at": requested_at,
+                    "resolved_at": resolved_at,
+                    "note": note,
+                }
+            )
+        return sorted(approvals, key=lambda item: item["requested_at"] or "", reverse=True)
     approvals = []
     for approval in service.list_approvals(status=status, limit=200):
         task = service.get_task(approval["task_id"])
