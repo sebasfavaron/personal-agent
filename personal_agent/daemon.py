@@ -15,7 +15,7 @@ HTML_PAGE = """<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>personal-agent / codex runner</title>
+    <title>personal-agent / task runner</title>
     <style>
       :root {
         --bg: #f5f1ea;
@@ -69,8 +69,8 @@ HTML_PAGE = """<!doctype html>
   </head>
   <body>
     <header>
-      <h1>personal-agent / codex runner</h1>
-      <p>UI -> draft -> confirm cwd -> launch codex -> result.</p>
+      <h1>personal-agent / task runner</h1>
+      <p>UI -> draft -> confirm cwd -> launch runner -> result.</p>
       <div class="row">
         <button id="refresh-status" type="button" class="secondary">Refresh</button>
         <span id="refresh-state" class="muted">Manual refresh</span>

@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from .config import CODEX_ADD_DIRS, CODEX_BIN
+from .config import RUNNER_BIN
 from .repo_targets import infer_target_repo, repo_target_by_id
 
 
@@ -92,7 +91,7 @@ def fallback_subtasks(text: str, route: dict[str, Any]) -> list[dict[str, str]]:
     if route["primary_agent"] == "code":
         return [
             {"title": "Inspect technical context", "detail": f"Understand repo or code context for: {text}"},
-            {"title": "Run code subagent", "detail": f"Execute code-shaped work inside the codex subagent for: {text}"},
+            {"title": "Run code subagent", "detail": f"Execute code-shaped work inside the code subagent for: {text}"},
             {"title": "Summarize technical outcome", "detail": f"Collect code result and produce final report for: {text}"},
         ]
     return [
@@ -113,10 +112,10 @@ def build_intake_plan(text: str, memory_context: list[dict[str, Any]]) -> dict[s
         "target_repo_path": fallback_target_repo["path"] if fallback_target_repo else None,
         "subtasks": fallback_subtasks(text, fallback_route),
         "planning_source": "fallback",
-        "codex_instruction": "",
+        "runner_instruction": "",
     }
     try:
-        planned = _run_codex_plan(text, memory_context)
+        planned = _run_runner_plan(text, memory_context)
     except (FileNotFoundError, OSError, subprocess.CalledProcessError, json.JSONDecodeError, ValueError):
         return fallback
     return _normalize_plan(planned, fallback)
@@ -133,33 +132,39 @@ def build_route_payload(text: str, memory_context: list[dict[str, Any]] | None =
         "target_repo_name": plan.get("target_repo_name"),
         "target_repo_path": plan.get("target_repo_path"),
         "planning_source": plan["planning_source"],
-        "codex_instruction": plan["codex_instruction"],
+        "runner_instruction": plan["runner_instruction"],
     }
 
 
-def _run_codex_plan(text: str, memory_context: list[dict[str, Any]]) -> dict[str, Any]:
+def _run_runner_plan(text: str, memory_context: list[dict[str, Any]]) -> dict[str, Any]:
     prompt = _planning_prompt(text, memory_context)
-    with tempfile.NamedTemporaryFile(prefix="personal-agent-plan-", suffix=".json", delete=False) as handle:
-        output_path = Path(handle.name)
     command = [
-        CODEX_BIN,
-        "exec",
-        "--sandbox",
-        "read-only",
-        "-C",
+        RUNNER_BIN,
+        "run",
+        "--format",
+        "json",
+        "--dir",
         str(PERSONAL_ROOT),
-        "-o",
-        str(output_path),
     ]
-    for writable_dir in CODEX_ADD_DIRS:
-        command.extend(["--add-dir", str(writable_dir)])
     command.append(prompt)
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        raw = output_path.read_text(encoding="utf-8").strip() or result.stdout.strip()
-    finally:
-        output_path.unlink(missing_ok=True)
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    raw = _runner_text(result.stdout) or result.stdout.strip()
     return _extract_json_object(raw)
+
+
+def _runner_text(stdout_text: str) -> str:
+    parts: list[str] = []
+    for line in stdout_text.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("type") != "text":
+            continue
+        text = ((payload.get("part") or {}).get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts).strip()
 
 
 def _planning_prompt(text: str, memory_context: list[dict[str, Any]]) -> str:
@@ -184,7 +189,7 @@ def _planning_prompt(text: str, memory_context: list[dict[str, Any]]) -> str:
             '  "reason": "short reason",',
             '  "delegation_target": "ballbox-company-agent|null",',
             '  "target_repo_id": "repo_personal_agent|repo_ai_dev_workflow|repo_ballbox_company_agent|null",',
-            '  "codex_instruction": "short execution note for the shell",',
+            '  "runner_instruction": "short execution note for the shell",',
             '  "subtasks": [',
             '    {"title": "short title", "detail": "one sentence"}',
             "  ]",
@@ -249,7 +254,7 @@ def _normalize_plan(payload: dict[str, Any], fallback: dict[str, Any]) -> dict[s
             target_repo_name = fallback.get("target_repo_name")
             target_repo_path = fallback.get("target_repo_path")
     subtasks = _normalize_subtasks(payload.get("subtasks"), fallback["subtasks"])
-    codex_instruction = str(payload.get("codex_instruction") or "").strip()
+    runner_instruction = str(payload.get("runner_instruction") or payload.get("codex_instruction") or "").strip()
     return {
         "primary_agent": primary_agent,
         "secondary_agent": secondary_agent,
@@ -259,8 +264,8 @@ def _normalize_plan(payload: dict[str, Any], fallback: dict[str, Any]) -> dict[s
         "target_repo_name": target_repo_name,
         "target_repo_path": target_repo_path,
         "subtasks": subtasks,
-        "planning_source": "codex",
-        "codex_instruction": codex_instruction,
+        "planning_source": "runner",
+        "runner_instruction": runner_instruction,
     }
 
 

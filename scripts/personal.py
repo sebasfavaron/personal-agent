@@ -294,7 +294,7 @@ def main() -> int:
         return 1
 
     if args.command == "blocker":
-        print("blocker flow removed from direct codex runner", file=sys.stderr)
+        print("blocker flow removed from direct runner", file=sys.stderr)
         return 1
 
     if args.command == "route":

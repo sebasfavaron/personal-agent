@@ -7,7 +7,7 @@
 - `personal-agent`
   - daemon
   - dashboard at `127.0.0.1:8082`
-  - intake draft + cwd confirmation + direct Codex launch
+  - intake draft + cwd confirmation + direct runner launch
 - `agents-database`
   - canonical shared state
   - `shared-agent-memory.sqlite3`
@@ -17,8 +17,8 @@
   - company/domain subagent
 - `ai-dev-workflow`
   - code/repo subagent
-- `codex`
-  - direct execution backend for one task per spawned run
+- execution CLI
+  - pluggable backend for one task per spawned run
 - GitHub
   - public persistence for repo changes and V1 cross-references
 
@@ -54,8 +54,8 @@
   - `~/ai-dev-workflow/.agents/feature-contexts/`
 - Codex skill symlinks:
   - `~/.codex/skills`
-- Codex writable-extra-dir convention for `personal-agent`:
-  - launch with `--add-dir ~/agents-database` so sandboxed `codex exec` can write the canonical shared DB in place
+- runner convention for `personal-agent`:
+  - prefer a configurable CLI harness rather than hardcoding one provider/tool
 
 ### Shared-only state
 
@@ -108,7 +108,7 @@ Operator note:
 - dashboard loads at `:8082`
 - shared DB contains tasks, runs, artifacts, handoffs
 - draft tasks must not launch until the human confirms or edits the inferred cwd
-- `codex exec` is available on PATH
+- chosen runner CLI is available on PATH
 
 ## Recovery / Backup
 
@@ -122,7 +122,7 @@ Minimum backup set:
 ## V1 Notes
 
 - intake infers a repo/cwd, but the UI exposes it for confirmation before launch
-- each accepted task spawns its own `codex exec` process from the chosen cwd
+- each accepted task spawns its own runner process from the chosen cwd
 - the default execution mode is `danger-full-access`
 - Python persists task state, task runs, stdout/stderr paths, and the final markdown artifact
 - status surfaces expose `draft_tasks`, `active_runs`, `failed_tasks`, and `recent_results`

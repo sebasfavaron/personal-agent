@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import threading
@@ -7,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import BASE_DIR, CODEX_ADD_DIRS, CODEX_BIN
+from .config import BASE_DIR, RUNNER_BIN
 from .repo_targets import available_cwd_options, default_code_repo, infer_target_repo, repo_catalog, repo_target_by_id
 from .shared_memory import get_memory_service
 
@@ -48,7 +49,7 @@ class PersonalAgentRuntime:
         self._restart_paused_runs()
 
     def _ensure_entities(self) -> None:
-        self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Direct Codex runner")
+        self.service.create_project(PERSONAL_PROJECT_ID, "Personal Agent", "Direct task runner")
         for repo in repo_catalog().values():
             self.service.create_repo(str(repo["id"]), str(repo["name"]), project_id=PERSONAL_PROJECT_ID, path=str(repo["path"]))
 
@@ -106,18 +107,14 @@ class PersonalAgentRuntime:
         stdout_handle = stdout_path.open("w", encoding="utf-8")
         stderr_handle = stderr_path.open("w", encoding="utf-8")
         command = [
-            CODEX_BIN,
-            "exec",
-            "--sandbox",
-            "danger-full-access",
-            "-C",
+            RUNNER_BIN,
+            "run",
+            "--dir",
             str(final_cwd),
-            "-o",
-            str(output_path),
+            "--format",
+            "json",
+            prompt,
         ]
-        for writable_dir in CODEX_ADD_DIRS:
-            command.extend(["--add-dir", str(writable_dir)])
-        command.append(prompt)
         process = subprocess.Popen(command, stdout=stdout_handle, stderr=stderr_handle, text=True)
         state = ProcessState(
             run_id=run["id"],
@@ -264,12 +261,12 @@ class PersonalAgentRuntime:
         markdown = self._read_file(state.output_path)
         stdout_text = self._read_file(state.stdout_path)
         stderr_text = self._read_file(state.stderr_path)
-        report_body = markdown.strip() or stdout_text.strip()
+        report_body = markdown.strip() or self._runner_text(stdout_text) or stdout_text.strip()
         if exit_code == 0 and report_body:
             artifact = self.service.create_artifact(
                 task_id=task["id"],
                 artifact_type="report",
-                title=f"Codex result for {task['title']}",
+                title=f"Runner result for {task['title']}",
                 content=report_body,
                 source_ref=PERSONAL_AGENT_ID,
                 metadata={
@@ -279,7 +276,8 @@ class PersonalAgentRuntime:
                     "output_refs": self._extract_output_refs(report_body),
                 },
             )
-            self.service.finish_task_run(run_id, status="succeeded", result_summary="Codex run completed")
+            state.output_path.write_text(report_body, encoding="utf-8")
+            self.service.finish_task_run(run_id, status="succeeded", result_summary="Runner run completed")
             self.service.update_task(
                 task["id"],
                 status="completed",
@@ -294,7 +292,7 @@ class PersonalAgentRuntime:
             failure_report = "\n\n".join(
                 section
                 for section in [
-                    "# Codex run failed",
+                    "# Runner run failed",
                     f"- Exit code: {exit_code}",
                     "## Stdout\n" + stdout_text.strip() if stdout_text.strip() else "",
                     "## Stderr\n" + stderr_text.strip() if stderr_text.strip() else "",
@@ -304,7 +302,7 @@ class PersonalAgentRuntime:
             artifact = self.service.create_artifact(
                 task_id=task["id"],
                 artifact_type="run_failure",
-                title=f"Codex failure for {task['title']}",
+                title=f"Runner failure for {task['title']}",
                 content=failure_report,
                 source_ref=PERSONAL_AGENT_ID,
                 metadata={"classification": "intermediate", "run_id": run_id},
@@ -312,8 +310,8 @@ class PersonalAgentRuntime:
             self.service.finish_task_run(
                 run_id,
                 status="failed",
-                result_summary="Codex run failed",
-                error_message=(stderr_text.strip() or stdout_text.strip() or "codex execution failed")[:500],
+                result_summary="Runner run failed",
+                error_message=(stderr_text.strip() or stdout_text.strip() or "runner execution failed")[:500],
             )
             self.service.update_task(
                 task["id"],
@@ -337,7 +335,7 @@ class PersonalAgentRuntime:
                 run["id"],
                 status="paused",
                 result_summary="Recovered interrupted run after daemon restart",
-                error_message="Daemon restarted before Codex finished",
+                    error_message="Daemon restarted before runner finished",
             )
             if task.get("status") == "in_progress":
                 self.service.update_task(
@@ -353,7 +351,7 @@ class PersonalAgentRuntime:
                                 "auto_restart_on_daemon_start": True,
                                 "recovered_run_id": run["id"],
                                 "paused_run_id": run["id"],
-                                "paused_reason": "Daemon restarted before Codex finished",
+                                "paused_reason": "Daemon restarted before runner finished",
                             }
                         },
                     ),
@@ -403,7 +401,7 @@ class PersonalAgentRuntime:
         memory_block = "\n".join(memory_lines[:3]) if memory_lines else "- none"
         return "\n".join(
             [
-                "You are running as a direct Codex execution for personal-agent.",
+                "You are running as a direct execution for personal-agent.",
                 f"Work from this repository root: {cwd}",
                 "Use the repository's local rules and skills.",
                 "Implement directly when needed.",
@@ -454,3 +452,17 @@ class PersonalAgentRuntime:
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8", errors="replace")
+
+    def _runner_text(self, stdout_text: str) -> str:
+        parts: list[str] = []
+        for line in stdout_text.splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") != "text":
+                continue
+            text = ((payload.get("part") or {}).get("text") or "").strip()
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts).strip()

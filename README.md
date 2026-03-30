@@ -20,8 +20,8 @@ See [INSTALL.md](INSTALL.md) for setup.
 
 - daemon + dashboard at `127.0.0.1:8082`
 - shared-memory orchestration over `agents-database`
-- direct Codex task runner with `draft -> confirm cwd -> launch -> result`
-- one `codex exec` process per task, launched from the selected repo root
+- direct task runner with `draft -> confirm cwd -> launch -> result`
+- one runner process per task, launched from the selected repo root
 - dashboard/CLI snapshot with drafts, active runs, failed runs, and recent results
 
 System map and machine-recreation guide:
@@ -57,13 +57,15 @@ Default shared-memory path discovery:
 - tries `~/agents-database/src` first
 - then falls back to sibling discovery heuristics if the direct path is unavailable
 - database defaults to `<shared-memory-root>/data/shared-agent-memory.sqlite3`
-- when launching Codex from `personal-agent`, add `--add-dir ~/agents-database` so sandboxed Codex runs can write the canonical DB in place
+- runner binary is configurable; choose the installed CLI that best fits the machine/runtime
 
 These can be overridden with:
 
 - `PERSONAL_AGENT_SHARED_MEMORY_ROOT`
 - `PERSONAL_AGENT_SHARED_MEMORY_DB_PATH`
-- `PERSONAL_AGENT_CODEX_ADD_DIRS`
+- `PERSONAL_AGENT_RUNNER_BIN`
+- `PERSONAL_AGENT_RUNNER_ADD_DIRS`
+- `PERSONAL_AGENT_CODEX_ADD_DIRS` remains legacy-compatible env input for add-dir lists
 
 ## What Is Still A Promise
 

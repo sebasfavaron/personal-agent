@@ -1,0 +1,16 @@
+[Unit]
+Description=Personal Agent daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sebas/personal-agent
+Environment=HOST=0.0.0.0
+Environment=PORT=8082
+ExecStart=/home/sebas/personal-agent/scripts/run-server-daemon.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

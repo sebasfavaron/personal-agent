@@ -437,7 +437,7 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertEqual(child["status"], "draft")
         self.assertEqual(child["parent_task_id"], parent["id"])
 
-    def test_runtime_start_task_launches_codex_with_confirmed_cwd(self) -> None:
+    def test_runtime_start_task_launches_runner_with_confirmed_cwd(self) -> None:
         from personal_agent.runtime import PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
@@ -450,9 +450,15 @@ class PersonalAgentTests(unittest.TestCase):
                 del text
                 seen.append(command)
                 self.pid = 4321
-                output_path = Path(command[command.index("-o") + 1])
-                output_path.write_text("# Summary\n\nDone.\n\n## Outputs\n- branch: feat/test\n", encoding="utf-8")
-                stdout.write("stdout ok\n")
+                stdout.write(
+                    json.dumps(
+                        {
+                            "type": "text",
+                            "part": {"text": "# Summary\n\nDone.\n\n## Outputs\n- branch: feat/test"},
+                        }
+                    )
+                    + "\n"
+                )
                 stdout.flush()
                 stderr.flush()
                 self._returncode = 0
@@ -472,8 +478,9 @@ class PersonalAgentTests(unittest.TestCase):
         task = self._wait_for_task_status(runtime, intake.task["id"], "completed")
         self.assertEqual(payload["run"]["task_id"], intake.task["id"])
         self.assertTrue(seen)
-        self.assertIn("danger-full-access", seen[0])
-        self.assertEqual(seen[0][seen[0].index("-C") + 1], str(Path(fake_repo_dir).resolve()))
+        self.assertEqual(Path(seen[0][0]).name, "opencode")
+        self.assertIn("run", seen[0])
+        self.assertEqual(seen[0][seen[0].index("--dir") + 1], str(Path(fake_repo_dir).resolve()))
         artifacts = runtime.service.list_artifacts(task_id=intake.task["id"], limit=5)
         self.assertEqual(artifacts[0]["artifact_type"], "report")
         self.assertEqual(task["metadata"]["execution"]["result_artifact_id"], artifacts[0]["id"])
@@ -545,9 +552,7 @@ class PersonalAgentTests(unittest.TestCase):
             def __init__(self, command, stdout, stderr, text):
                 del text
                 self.pid = 2468
-                output_path = Path(command[command.index("-o") + 1])
-                output_path.write_text("# Summary\n\nRecovered.\n", encoding="utf-8")
-                stdout.write("stdout ok\n")
+                stdout.write(json.dumps({"type": "text", "part": {"text": "# Summary\n\nRecovered."}}) + "\n")
                 stdout.flush()
                 stderr.flush()
                 self._returncode = 0
@@ -813,9 +818,7 @@ class PersonalAgentTests(unittest.TestCase):
             def __init__(self, command, stdout, stderr, text):
                 del text
                 self.pid = 9988
-                output_path = Path(command[command.index("-o") + 1])
-                output_path.write_text("# Summary\n\nDone from API.\n", encoding="utf-8")
-                stdout.write("ok\n")
+                stdout.write(json.dumps({"type": "text", "part": {"text": "# Summary\n\nDone from API."}}) + "\n")
                 stdout.flush()
                 stderr.flush()
                 self._returncode = 0
@@ -918,13 +921,13 @@ class PersonalAgentTests(unittest.TestCase):
             page,
         )
 
-    def test_runtime_codex_command_adds_shared_memory_repo_as_writable_dir(self) -> None:
-        from personal_agent.runtime import CODEX_ADD_DIRS, PERSONAL_AGENT_ID, PersonalAgentRuntime
+    def test_runtime_runner_command_uses_json_output_and_dir(self) -> None:
+        from personal_agent.runtime import PERSONAL_AGENT_ID, PersonalAgentRuntime
 
         runtime = PersonalAgentRuntime()
         task = runtime.service.create_task(
-            title="Probe codex command",
-            intent="Need to verify codex add-dir wiring",
+            title="Probe runner command",
+            intent="Need to verify runner command wiring",
             owner_agent=PERSONAL_AGENT_ID,
             status="draft",
             metadata={"execution": {"cwd": str(self._fake_repo_dir())}},
@@ -936,8 +939,7 @@ class PersonalAgentTests(unittest.TestCase):
                 del text
                 seen.append(command)
                 self.pid = 7777
-                output_path = Path(command[command.index("-o") + 1])
-                output_path.write_text("# Report\n\nAll good.\n", encoding="utf-8")
+                stdout.write(json.dumps({"type": "text", "part": {"text": "# Report\n\nAll good."}}) + "\n")
                 stdout.flush()
                 stderr.flush()
                 self._returncode = 0
@@ -954,16 +956,15 @@ class PersonalAgentTests(unittest.TestCase):
         with patch("personal_agent.runtime.subprocess.Popen", FakePopen):
             runtime.start_task(task["id"], self._fake_repo_dir())
 
-        codex_commands = [
+        runner_commands = [
             command
             for command in seen
-            if len(command) >= 2 and Path(command[0]).name == "codex" and command[1] == "exec"
+            if len(command) >= 2 and Path(command[0]).name == "opencode" and command[1] == "run"
         ]
-        self.assertTrue(codex_commands)
-        self.assertIn("-C", codex_commands[0])
-        self.assertIn("--add-dir", codex_commands[0])
-        add_dir_value = codex_commands[0][codex_commands[0].index("--add-dir") + 1]
-        self.assertEqual(add_dir_value, str(CODEX_ADD_DIRS[0]))
+        self.assertTrue(runner_commands)
+        self.assertIn("--format", runner_commands[0])
+        self.assertEqual(runner_commands[0][runner_commands[0].index("--format") + 1], "json")
+        self.assertIn("--dir", runner_commands[0])
 
     def test_daemon_renders_source_references_as_internal_links(self) -> None:
         from personal_agent.daemon import PersonalAgentHandler
