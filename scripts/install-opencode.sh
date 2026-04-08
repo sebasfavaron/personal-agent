@@ -83,6 +83,7 @@ install() {
   mkdir -p "$AGENTS_DIR"
   mkdir -p "$OPENCODE_DIR"
   mkdir -p "$HARNESS_DIR"
+  mkdir -p "$HARNESS_DIR/preambles"
   mkdir -p "$HARNESS_LOG_DIR"
 
   for skill in $SKILLS; do
