@@ -7,7 +7,7 @@ description: Send Telegram notifications via bot
 
 ## Workflow
 
-1. Ensure environment variables are set:
+1. Ensure environment variables are set (or stored in `~/.agents/skills/telegram-notify/.env`):
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
 2. Execute:

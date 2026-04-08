@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+ENV_FILE="$(dirname "$0")/.env"
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+fi
+
 if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
   echo "missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID" 1>&2
   exit 1

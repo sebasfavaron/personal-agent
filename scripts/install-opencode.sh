@@ -85,6 +85,8 @@ install() {
   done
 
   fetch_file "$RAW_BASE/.agents/skills/telegram-notify/telegram-notify" "$AGENTS_DIR/telegram-notify/telegram-notify"
+
+  fetch_file "$RAW_BASE/.agents/skills/telegram-notify/.env.example" "$AGENTS_DIR/telegram-notify/.env.example"
   chmod +x "$AGENTS_DIR/telegram-notify/telegram-notify"
 
   fetch_file "$RAW_BASE/config/opencode/AGENTS.md" "$RULES_FILE"
