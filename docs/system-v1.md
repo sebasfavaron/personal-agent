@@ -30,7 +30,7 @@
 - `~/ai-dev-workflow`
 - `~/agents-database/data/shared-agent-memory.sqlite3`
 - `~/ai-dev-workflow/.agents/local-config.json`
-- `~/.codex/skills`
+- `~/.agents/skills`
 
 ## What Lives Where
 
@@ -52,8 +52,8 @@
   - `~/ai-dev-workflow/.agents/local-config.json`
 - active feature contexts, when present:
   - `~/ai-dev-workflow/.agents/feature-contexts/`
-- Codex skill symlinks:
-  - `~/.codex/skills`
+- Agent skill installs:
+  - `~/.agents/skills`
 - runner convention for `personal-agent`:
   - prefer a configurable CLI harness rather than hardcoding one provider/tool
 
@@ -73,7 +73,7 @@ Compatibility behavior:
 1. Install prerequisites.
    - Python 3.11+
    - Git
-   - Codex CLI
+   - OpenCode CLI
    - GitHub CLI if using `ai-dev-workflow`
 2. Recreate sibling layout under `~`.
    - clone `personal-agent`
@@ -86,7 +86,7 @@ Compatibility behavior:
    - copy `~/ai-dev-workflow/.agents/local-config.json`
    - copy any active `feature-contexts/` if needed
 5. Reinstall skills.
-   - run `~/personal-agent/scripts/install-skills.sh`
+   - run `~/personal-agent/scripts/install-opencode.sh`
 6. Verify shared memory import path.
    - `python3 ~/personal-agent/scripts/personal.py status --json`
 7. Start the daemon.

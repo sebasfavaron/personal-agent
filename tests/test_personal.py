@@ -979,6 +979,19 @@ class PersonalAgentTests(unittest.TestCase):
         self.assertIn('<li id="ref-s1">', rendered)
         self.assertIn('<li id="ref-s2">', rendered)
 
+    def test_daemon_renders_source_references_as_internal_links(self) -> None:
+        from personal_agent.daemon import PersonalAgentHandler
+
+        handler = PersonalAgentHandler.__new__(PersonalAgentHandler)
+        rendered = handler._render_markdown(
+            "# Report\n\nClaim backed by [S1][S2].\n\n## Fuentes primarias usadas\n- [S1] Source one: https://example.com/1\n- [S2] Source two: https://example.com/2\n"
+        )
+
+        self.assertIn('<a href="#ref-s1">[S1]</a>', rendered)
+        self.assertIn('<a href="#ref-s2">[S2]</a>', rendered)
+        self.assertIn('<li id="ref-s1">', rendered)
+        self.assertIn('<li id="ref-s2">', rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
