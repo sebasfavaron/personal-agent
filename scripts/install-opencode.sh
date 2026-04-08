@@ -12,7 +12,8 @@ SKILLS="personal-research personal-status personal-memory-search personal-approv
 
 OPENCODE_DIR="${HOME}/.config/opencode"
 AGENTS_DIR="${HOME}/.agents/skills"
-RULES_FILE="${OPENCODE_DIR}/AGENTS.md"
+RULES_FILE="${HOME}/AGENTS.md"
+RULES_LINK="${OPENCODE_DIR}/AGENTS.md"
 
 say() {
   printf "%s
@@ -31,7 +32,7 @@ require_cmd() {
 
 backup_path() {
   path="$1"
-  if [ -e "$path" ]; then
+  if [ -e "$path" ] || [ -L "$path" ]; then
     rm -rf "${path}.bck"
     mv "$path" "${path}.bck"
   fi
@@ -39,7 +40,7 @@ backup_path() {
 
 restore_path() {
   path="$1"
-  if [ -e "${path}.bck" ]; then
+  if [ -e "${path}.bck" ] || [ -L "${path}.bck" ]; then
     rm -rf "$path"
     mv "${path}.bck" "$path"
   fi
@@ -57,6 +58,7 @@ install() {
 
   backup_path "$AGENTS_DIR"
   backup_path "$RULES_FILE"
+  backup_path "$RULES_LINK"
 
   mkdir -p "$AGENTS_DIR"
   mkdir -p "$OPENCODE_DIR"
@@ -68,15 +70,18 @@ install() {
   done
 
   fetch_file "$RAW_BASE/config/opencode/AGENTS.md" "$RULES_FILE"
+  ln -s "$RULES_FILE" "$RULES_LINK"
 
   say "installed skills to $AGENTS_DIR"
   say "installed rules to $RULES_FILE"
-  say "backup paths: ${AGENTS_DIR}.bck, ${RULES_FILE}.bck"
+  say "symlinked rules to $RULES_LINK"
+  say "backup paths: ${AGENTS_DIR}.bck, ${RULES_FILE}.bck, ${RULES_LINK}.bck"
 }
 
 restore() {
   restore_path "$AGENTS_DIR"
   restore_path "$RULES_FILE"
+  restore_path "$RULES_LINK"
   say "restored backups if present"
 }
 

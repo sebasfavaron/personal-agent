@@ -6,6 +6,7 @@ These rules apply to OpenCode sessions across repositories.
 - use personal-agent skills for memory, approvals, and research
 - durable preferences and memories live in ~/agents-database (server-side, not local)
 - this file is sourced from the personal-agent repo installer; edit there, not only locally
+- installer writes this file to ~/AGENTS.md and symlinks ~/.config/opencode/AGENTS.md
 
 ## Operating Profile
 - prioritize business impact and leverage over technical elegance

@@ -119,8 +119,8 @@ python3 scripts/personal.py route --json   --input "Ballbox necesita fix en repo
 
 ## Gotchas
 
-- the OpenCode installer overwrites `~/.agents/skills` and `~/.config/opencode/AGENTS.md`
-- backups are saved to `~/.agents/skills.bck` and `~/.config/opencode/AGENTS.md.bck` (existing `.bck` is replaced)
+- the OpenCode installer overwrites `~/.agents/skills` and `~/AGENTS.md` (and symlinks `~/.config/opencode/AGENTS.md`)
+- backups are saved to `~/.agents/skills.bck`, `~/AGENTS.md.bck`, and `~/.config/opencode/AGENTS.md.bck` (existing `.bck` is replaced)
 - `opencode` and `curl` must be on your `PATH`
 
 ## Current Limitations
