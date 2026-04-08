@@ -161,14 +161,3 @@ Install the local pre-push gate once per clone:
 ```
 
 After that, `git push` is blocked unless `scripts/run-checks.sh` passes.
-
-## Agent Harness
-
-This repo includes the agent harness under `agent-harness/`.
-
-Default paths:
-- harness script: `/Users/sebas/personal-agent/agent-harness/opencode_clean_run.py`
-- preambles: `/Users/sebas/personal-agent/agent-harness/preambles/`
-- logs: `/Users/sebas/personal-agent/agent-harness/logs/`
-
-The OpenCode installer places the harness in `~/personal-agent/agent-harness` when using the curl-based install.

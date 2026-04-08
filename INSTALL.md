@@ -117,23 +117,6 @@ If you want Codex to discover them globally on your machine:
 python3 scripts/personal.py route --json   --input "Ballbox necesita fix en repo de pagos"   --execute
 ```
 
-
-## Agent Harness (Installed)
-
-The OpenCode installer also installs the harness to:
-
-```text
-~/personal-agent/agent-harness/
-```
-
-Key paths:
-
-```text
-~/personal-agent/agent-harness/opencode_clean_run.py
-~/personal-agent/agent-harness/preambles/
-~/personal-agent/agent-harness/logs/
-```
-
 ## Gotchas
 
 - the OpenCode installer overwrites `~/.agents/skills` and `~/AGENTS.md` (and symlinks `~/.config/opencode/AGENTS.md`)

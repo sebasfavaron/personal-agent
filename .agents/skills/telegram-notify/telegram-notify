@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+  echo "missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID" 1>&2
+  exit 1
+fi
+
+MESSAGE="$*"
+if [ -z "$MESSAGE" ]; then
+  echo "usage: telegram-notify <message>" 1>&2
+  exit 1
+fi
+
+curl -fsSL -X POST   "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"   -d "chat_id=${TELEGRAM_CHAT_ID}"   --data-urlencode "text=${MESSAGE}"   >/dev/null
+
+echo "sent"
