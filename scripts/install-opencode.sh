@@ -52,6 +52,21 @@ fetch_file() {
   curl -fsSL "$url" -o "$dest"
 }
 
+ensure_symlink() {
+  link="$1"
+  target="$2"
+  if command -v readlink >/dev/null 2>&1; then
+    if [ -L "$link" ]; then
+      current="$(readlink "$link" 2>/dev/null || true)"
+      if [ "$current" = "$target" ]; then
+        return 0
+      fi
+    fi
+  fi
+  rm -rf "$link"
+  ln -s "$target" "$link"
+}
+
 install() {
   require_cmd opencode
   require_cmd curl
@@ -70,7 +85,7 @@ install() {
   done
 
   fetch_file "$RAW_BASE/config/opencode/AGENTS.md" "$RULES_FILE"
-  ln -s "$RULES_FILE" "$RULES_LINK"
+  ensure_symlink "$RULES_LINK" "$RULES_FILE"
 
   say "installed skills to $AGENTS_DIR"
   say "installed rules to $RULES_FILE"
