@@ -9,7 +9,7 @@ See [INSTALL.md](INSTALL.md) for setup.
 ## Principles
 
 - Repo-local ownership for personal capabilities
-- Global skill discovery via symlinks from `~/.codex/skills`
+- Global skill discovery via `~/.agents/skills` (installer copies skills)
 - Shared DB in sibling repo `~/agents-database` is the durable source of truth for new work
 - Human approval required for outreach / external side effects
 - `ai-dev-workflow` stays focused on project workflows
@@ -36,7 +36,7 @@ This repository now contains:
 - shared-memory-backed persistence for research runs
 - source, claim, task, and approval tracking
 - memory search over stored runs, claims, and tasks
-- Codex skill wrappers owned by this repo
+- Agent skill wrappers owned by this repo
 - task intake persistence with parent tasks and subtasks
 - request routing and specialist delegation across personal/company/code contexts
 - internal command surface via `python3 scripts/personal.py`
@@ -135,14 +135,15 @@ python3 scripts/personal.py leisure list --media-type series
 
 - personal capabilities stay in this repo
 - this repo should be the normal conversational entry point
-- Codex skills from this repo can be exposed globally with symlinks
+- Skills from this repo can be installed globally into `~/.agents/skills`
 - `ai-dev-workflow` remains separate and keeps owning its own workflow skills
 - specialist repos can be delegated to when the request clearly matches them
 - risky external actions should go through the approval queue first
 
 ## Clone-Friendly Extras
 
-- `scripts/install-skills.sh` links this repo's skills into `~/.codex/skills`
+- `scripts/install-opencode.sh` installs skills + OpenCode rules without cloning (see INSTALL.md)
+- `scripts/install-skills.sh` links skills into `~/.codex/skills` (legacy)
 - GitHub Actions runs the unit test suite on push and pull request
 
 ## Tests
