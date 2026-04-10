@@ -8,6 +8,8 @@ REPO="${PERSONAL_AGENT_REPO:-$REPO_DEFAULT}"
 REF="${PERSONAL_AGENT_REF:-$REF_DEFAULT}"
 RAW_BASE="${PERSONAL_AGENT_RAW_BASE:-https://raw.githubusercontent.com/${REPO}/${REF}}"
 
+LOCAL_PATH="${PERSONAL_AGENT_LOCAL_PATH:-}"
+
 SKILLS="personal-research personal-status personal-memory-search personal-approval-queue personal-task-intake telegram-notify"
 
 OPENCODE_DIR="${HOME}/.config/opencode"
@@ -69,6 +71,29 @@ ensure_symlink() {
 
 install() {
   require_cmd opencode
+
+  if [ -n "$LOCAL_PATH" ] && [ -d "$LOCAL_PATH" ]; then
+    backup_path "$AGENTS_DIR"
+    backup_path "$RULES_FILE"
+    backup_path "$RULES_LINK"
+
+    mkdir -p "$OPENCODE_DIR"
+    mkdir -p "$(dirname "$AGENTS_DIR")"
+
+    rm -rf "$AGENTS_DIR"
+    ln -s "$LOCAL_PATH/.agents/skills" "$AGENTS_DIR"
+
+    rm -rf "$RULES_FILE"
+    ln -s "$LOCAL_PATH/config/opencode/AGENTS.md" "$RULES_FILE"
+    ensure_symlink "$RULES_LINK" "$RULES_FILE"
+
+    say "symlinked skills to $AGENTS_DIR"
+    say "symlinked rules to $RULES_FILE"
+    say "symlinked rules to $RULES_LINK"
+    say "backup paths: ${AGENTS_DIR}.bck, ${RULES_FILE}.bck, ${RULES_LINK}.bck"
+    return 0
+  fi
+
   require_cmd curl
 
   backup_path "$AGENTS_DIR"
