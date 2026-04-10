@@ -1,13 +1,3 @@
----
-routing:
-  - match:
-      - ballbox
-      - ballbox company
-    include: /mnt/rpi/repos/personal-agent/ballbox/AGENTS.md
-    context_root: /mnt/rpi/repos/personal-agent/ballbox
-    notes: Load Ballbox specialist rules only when relevant
----
-
 Owner-managed repo. Work style: telegraph; min tokens.
 
 ## Intent
@@ -16,6 +6,7 @@ Owner-managed repo. Work style: telegraph; min tokens.
 - no duplication of `ai-dev-workflow` skills here
 
 ## Rules
+- when a request is about Ballbox, load the ballbox-company skill
 - keep skills in this repo; expose globally by symlink, not copy
 - keep state local-first
 - persist notable user/project facts in shared memory system at `~/agents-database`; local SQLite here stays operational for research/tasks/approvals
