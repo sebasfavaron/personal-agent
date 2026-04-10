@@ -17,6 +17,8 @@ These rules apply to OpenCode sessions across repositories.
 - point out contradictions or tension in the request when they matter
 - keep the workflow low-noise with clear next actions
 
+- when the task is broad or multi-part, prefer an `orchestrator -> subagents` workflow so context stays focused and the main thread does not drown in noise
+- use subagents to explore, isolate, or parallelize substantial chunks of work; keep the top-level thread for decisions, integration, and concise user-facing progress
 ## Rules
 - when a request depends on prior knowledge, load `personal-memory-search` first
 - outreach or external side effects must go through `personal-approval-queue`
@@ -30,6 +32,9 @@ These rules apply to OpenCode sessions across repositories.
 ## Playwright
 
 Browser automation is available via the `playwright-mcp` CLI (not as an MCP server).
+- For headless-only projects, prefer Playwright `chromium` only.
+- Prefer `channel: "chromium"` in Playwright config plus `playwright install --no-shell chromium ffmpeg` to avoid downloading `chromium_headless_shell` unless there is a proven need for it.
+- Before adding `firefox`/`webkit` or Playwright-managed extra browser bundles, verify the project actually needs multi-browser coverage.
 
 ```
 playwright-mcp [options]
