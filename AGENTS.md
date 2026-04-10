@@ -1,3 +1,13 @@
+---
+routing:
+  - match:
+      - ballbox
+      - ballbox company
+    include: /mnt/rpi/repos/personal-agent/ballbox/AGENTS.md
+    context_root: /mnt/rpi/repos/personal-agent/ballbox
+    notes: Load Ballbox specialist rules only when relevant
+---
+
 Owner-managed repo. Work style: telegraph; min tokens.
 
 ## Intent
