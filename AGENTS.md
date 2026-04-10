@@ -26,8 +26,7 @@ Owner-managed repo. Work style: telegraph; min tokens.
 - Sebas preference: if any spoken, remembered, or ambiguous term needs interpretation, resolve through `~/agents-database` first
 - Sebas preference: direct feedback is strong signal; adjust quickly when he says he likes/dislikes something
 - Codex launch convention for personal-agent work that must write shared DB: add `--add-dir ~/agents-database` so sandboxed runs can edit the canonical DB in-repo
-- Server mount: microSD (repos) at `/mnt/rpi` (UUID `9d779c82-e455-46a8-84d4-2df985173ef9`)
-- Playwright shared cache: `PLAYWRIGHT_BROWSERS_PATH=/mnt/rpi/playwright-browsers`
+
 ## Before Handoff
 - run repo checks
 - call out missing integrations plainly
