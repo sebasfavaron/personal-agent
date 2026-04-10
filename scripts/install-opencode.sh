@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO_DEFAULT="sebasfavaron/personal-agent"
+REPO_DEFAULT="sebasfavaron/opencode-harness"
 REF_DEFAULT="main"
 
 REPO="${PERSONAL_AGENT_REPO:-$REPO_DEFAULT}"

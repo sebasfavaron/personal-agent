@@ -27,7 +27,7 @@ What you do not get yet:
 ## Clone
 
 ```bash
-git clone https://github.com/sebasfavaron/personal-agent.git
+git clone https://github.com/sebasfavaron/opencode-harness.git
 cd personal-agent
 ```
 
@@ -88,13 +88,13 @@ export PERSONAL_AGENT_SHARED_MEMORY_DB_PATH=/absolute/path/to/shared-agent-memor
 This installs the global OpenCode rules file and the personal-agent skills without cloning this repo.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sebasfavaron/personal-agent/main/scripts/install-opencode.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sebasfavaron/opencode-harness/main/scripts/install-opencode.sh | sh
 ```
 
 Restore previous config if needed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sebasfavaron/personal-agent/main/scripts/install-opencode.sh | sh -s -- restore
+curl -fsSL https://raw.githubusercontent.com/sebasfavaron/opencode-harness/main/scripts/install-opencode.sh | sh -s -- restore
 ```
 
 ## Optional: Expose Skills Globally For Codex

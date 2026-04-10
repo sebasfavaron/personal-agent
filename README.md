@@ -1,4 +1,4 @@
-# personal-agent
+# opencode-harness
 
 Successor to `second-brain`.
 
@@ -16,7 +16,7 @@ See [INSTALL.md](INSTALL.md) for setup.
 
 ## V1 Front Door
 
-`personal-agent` now grows toward a front-door runtime:
+`opencode-harness` now grows toward a front-door runtime:
 
 - daemon + dashboard at `127.0.0.1:8082`
 - shared-memory orchestration over `agents-database`
@@ -49,7 +49,7 @@ Durable shared memory lives in the sibling project at `~/agents-database`.
 - research, leisure, approvals, and task intake write directly to shared memory
 - `memory-search` reads shared memory directly
 - approvals use the native shared-memory approvals table
-- `memory-migrate` rewrites legacy personal-agent metadata into the canonical shared-memory schema
+- `memory-migrate` rewrites legacy opencode-harness metadata into the canonical shared-memory schema
 - `research status --run-id <id>` resolves runs from canonical shared-memory records only
 
 Default shared-memory path discovery:
@@ -79,7 +79,7 @@ These are goals for future work. They are not implemented in the main runner pat
 
 ## Routing Model
 
-`personal-agent` is the intended front door.
+`opencode-harness` is the intended front door.
 
 - start here for general requests
 - personal context stays here
@@ -89,7 +89,7 @@ These are goals for future work. They are not implemented in the main runner pat
 ## Layout
 
 ```text
-personal-agent/
+opencode-harness/
 ├── .agents/skills/
 ├── data/
 ├── personal_agent/
