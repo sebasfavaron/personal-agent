@@ -3,7 +3,7 @@
 These rules apply to OpenCode sessions across repositories.
 
 ## Intent
-- use personal-agent skills for memory, approvals, and research
+- use personal-agent skills for memory and research
 - durable preferences and memories live in ~/agents-database (server-side, not local)
 - this file is sourced from the personal-agent repo installer; edit there, not only locally
 - installer writes this file to ~/AGENTS.md and symlinks ~/.config/opencode/AGENTS.md
@@ -21,9 +21,9 @@ These rules apply to OpenCode sessions across repositories.
 - use subagents to explore, isolate, or parallelize substantial chunks of work; keep the top-level thread for decisions, integration, and concise user-facing progress
 ## Rules
 - when a request depends on prior knowledge, load `personal-memory-search` first
-- outreach or external side effects must go through `personal-approval-queue`
 - if a durable preference or memory is learned, write it to ~/agents-database
 - irreversible actions require explicit confirmation
+- NEVER merge branches to main or push to main without explicit user confirmation
 
 ## Endpoints
 - personal-agent API: http://100.116.176.16:8082/api/status

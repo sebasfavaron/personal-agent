@@ -17,7 +17,6 @@ for skill in \
   personal-research \
   personal-status \
   personal-memory-search \
-  personal-approval-queue \
   personal-task-intake \
   temporary-file-share \
   karaoke-stem-separation
