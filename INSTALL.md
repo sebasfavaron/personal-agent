@@ -111,6 +111,11 @@ If you want Codex to discover them globally on your machine:
 ./scripts/install-skills.sh
 ```
 
+This currently links the core personal skills plus:
+
+- `temporary-file-share`
+- `karaoke-stem-separation`
+
 ## Optional: Verify Routing
 
 ```bash

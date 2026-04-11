@@ -10,7 +10,7 @@ RAW_BASE="${PERSONAL_AGENT_RAW_BASE:-https://raw.githubusercontent.com/${REPO}/$
 
 LOCAL_PATH="${PERSONAL_AGENT_LOCAL_PATH:-}"
 
-SKILLS="personal-research personal-status personal-memory-search personal-approval-queue personal-task-intake telegram-notify"
+SKILLS="personal-research personal-status personal-memory-search personal-approval-queue personal-task-intake telegram-notify temporary-file-share karaoke-stem-separation"
 
 OPENCODE_DIR="${HOME}/.config/opencode"
 AGENTS_DIR="${HOME}/.agents/skills"

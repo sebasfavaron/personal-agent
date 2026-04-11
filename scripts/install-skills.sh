@@ -12,7 +12,9 @@ for skill in \
   personal-status \
   personal-memory-search \
   personal-approval-queue \
-  personal-task-intake
+  personal-task-intake \
+  temporary-file-share \
+  karaoke-stem-separation
 do
   ln -sfn "$REPO_ROOT/.agents/skills/$skill" "$TARGET_DIR/$skill"
   printf 'linked %s -> %s\n' "$TARGET_DIR/$skill" "$REPO_ROOT/.agents/skills/$skill"

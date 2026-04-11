@@ -37,6 +37,7 @@ This repository now contains:
 - source, claim, task, and approval tracking
 - memory search over stored runs, claims, and tasks
 - Agent skill wrappers owned by this repo
+- reusable utility skills for temporary file sharing and karaoke stem separation
 - task intake persistence with parent tasks and subtasks
 - request routing and specialist delegation across personal/company/code contexts
 - internal command surface via `python3 scripts/personal.py`
@@ -136,6 +137,7 @@ python3 scripts/personal.py leisure list --media-type series
 - personal capabilities stay in this repo
 - this repo should be the normal conversational entry point
 - Skills from this repo can be installed globally into `~/.agents/skills`
+- current utility skills also include `temporary-file-share` and `karaoke-stem-separation`
 - `ai-dev-workflow` remains separate and keeps owning its own workflow skills
 - specialist repos can be delegated to when the request clearly matches them
 - risky external actions should go through the approval queue first
