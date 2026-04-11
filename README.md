@@ -145,7 +145,7 @@ python3 scripts/personal.py leisure list --media-type series
 ## Clone-Friendly Extras
 
 - `scripts/install-opencode.sh` installs skills + OpenCode rules without cloning (see INSTALL.md)
-- `scripts/install-skills.sh` links skills into `~/.codex/skills` (legacy)
+- `scripts/install-skills.sh` links skills into `~/.agents/skills`
 - GitHub Actions runs the unit test suite on push and pull request
 
 ## Tests

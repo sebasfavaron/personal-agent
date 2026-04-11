@@ -105,7 +105,7 @@ This repo owns its own skills under:
 .agents/skills/
 ```
 
-If you want Codex to discover them globally on your machine:
+If you want OpenCode to discover them globally on your machine:
 
 ```bash
 ./scripts/install-skills.sh
